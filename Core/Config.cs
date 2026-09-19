@@ -15,6 +15,8 @@ namespace FastStartup.Core
 
         public static ConfigEntry<int> BundleCacheMaxSizeMB { get; private set; }
 
+        public static ConfigEntry<bool> ConfigSaveBatcherEnabled { get; private set; }
+
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
@@ -33,6 +35,10 @@ namespace FastStartup.Core
             BundleCacheMaxSizeMB = file.Bind("BundleCache", "MaxCacheSizeMB", 2048,
                 new ConfigDescription("Cache size cap. Least recently used copies beyond it are deleted after the main menu " +
                                       "(copies used in the current session are kept).", new AcceptableValueRange<int>(64, 65536)));
+            ConfigSaveBatcherEnabled = file.Bind("ConfigSaveBatcher", "Enabled", true,
+                "While the chainloader loads plugins, write each changed .cfg once at the end instead of on every Bind/value " +
+                "change (BepInEx rewrites the whole file each time). Also flushed before a pending file is reloaded and on " +
+                "process exit. Read once at launch.");
         }
     }
 }

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using FastStartup.BundleCache;
+using FastStartup.ConfigSave;
 using FastStartup.Core;
 using FastStartup.Profiling;
 using HarmonyLib;
@@ -15,7 +16,10 @@ namespace FastStartup
     /// </summary>
     public static class FastStartupPatcher
     {
+        // Every FastStartup Harmony ID starts with "morgott.faststartup." so its own patches are recognizable.
+        private const string LifecycleHarmonyId = "morgott.faststartup.lifecycle";
         private const string BundleCacheHarmonyId = "morgott.faststartup.bundlecache";
+        private const string ConfigSaveHarmonyId = "morgott.faststartup.configsave";
 
         public static IEnumerable<string> TargetDLLs { get; } = new string[0];
 
@@ -43,11 +47,19 @@ namespace FastStartup
                 {
                     Profiler.InstallRuntimeHooks();
                 }
-                if (Config.BundleCacheEnabled?.Value == true)
+                bool bundles = Config.BundleCacheEnabled?.Value == true;
+                bool configSave = Config.ConfigSaveBatcherEnabled?.Value == true;
+                if (bundles || configSave)
                 {
-                    var harmony = new Harmony(BundleCacheHarmonyId);
-                    Lifecycle.Install(harmony);
-                    BundleCacheModule.Install(harmony);
+                    Lifecycle.Install(new Harmony(LifecycleHarmonyId));
+                }
+                if (configSave)
+                {
+                    Log.Guard("ConfigSaveBatcher install", () => ConfigSaveBatcher.Install(new Harmony(ConfigSaveHarmonyId)));
+                }
+                if (bundles)
+                {
+                    Log.Guard("BundleCache install", () => BundleCacheModule.Install(new Harmony(BundleCacheHarmonyId)));
                 }
             });
         }
