@@ -26,9 +26,10 @@ namespace FastStartup.Core
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
-            ProfilerEnabled = file.Bind("Profiler", "Enabled", true,
+            ProfilerEnabled = file.Bind("Profiler", "Enabled", false,
                 "Record a startup trace (process start -> main menu) and write BepInEx\\FastStartup\\trace.json (Chrome trace) " +
-                "and summary.txt. Read once at launch.");
+                "and summary.txt. Costs about 0.5 s of startup (its Harmony hooks), so it is off for normal play; turn it on to " +
+                "measure. Read once at launch.");
             ProfilerTimeModPatches = file.Bind("Profiler", "TimeModPatches", false,
                 "Also time every mod prefix/postfix/finalizer on the profiled game methods (FejdStartup.Awake etc.) per owner. " +
                 "Diagnostic only: hooking forces Mono to compile those methods early, which crashed the game once on a method " +
