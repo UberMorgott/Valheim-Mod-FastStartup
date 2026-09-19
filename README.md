@@ -1,9 +1,10 @@
 # FastStartup
 
-BepInEx 5 preloader patcher for Valheim startup speed. Personal build, not published.
+BepInEx 5 preloader patcher for Valheim startup speed. Personal build.
 
 Modules: **startup profiler**, **bundle cache** (replaces Fast AssetBundle Loader), **config save batcher**,
-**localization cache** and **Harmony batching** (these three replace StartupAccelerator and LocalizationCache).
+**localization cache** and **Harmony batching** (these three replace StartupAccelerator and LocalizationCache),
+**mod hotspots** (faster equivalents of slow startup code in other mods' embedded helpers).
 Design notes: `E:\DEV\Valheim\docs\designs\startup-accel-analysis.md`.
 
 ValheimPlus overlap: none. ValheimPlus has no startup-speed, bundle-cache or profiling feature.
@@ -19,7 +20,8 @@ Menu ready (end of the first `FejdStartup.Start`), 31 plugins, warm = bundle cac
 | setup | cold | warm |
 | --- | --- | --- |
 | no accelerators (2026-09-19 morning) | - | 41 s |
-| FastStartup, all modules, profiler off | - | 18.6 / 18.8 / 19.1 s |
+| FastStartup 0.2.0, all modules, profiler off | - | 16.9 / 18.0 / 17.5 s (ShaderReplacer off, interleaved: 19.4 / 19.2 s) |
+| FastStartup 0.1.0, all modules, profiler off | - | 18.6 / 18.8 / 19.1 s |
 | FastStartup, all modules, profiler on | 38.2 s (cache built after the menu) | 20.0 / 19.2 / 19.4 s |
 | FastStartup bundle cache + StartupAccelerator + LocalizationCache (before) | 43.7 s | 21-23 s |
 
@@ -31,6 +33,7 @@ Per module (warm, profiler sub-timings, same session, other load on the machine)
 | HarmonyBatching | wrapper builds 6.6-7.0 s, menu 27-29 s (4 runs) | 3.7-3.9 s, menu 20-21 s (4 runs, interleaved) |
 | ConfigSaveBatcher | 1131 `.cfg` writes, 0.8-1.2 s | 33 writes, 0.05-0.09 s |
 | LocalizationCache | vanilla `LoadCSV` bodies 0.6-0.8 s | 0.16-0.28 s |
+| ModHotspots ShaderReplacer | OreMines `ReplaceShaderPatch` 2.25 s | 0.19 s |
 | profiler itself | - | about +0.5 s (hence off by default) |
 
 For comparison, StartupAccelerator's three features and LocalizationCache measured 2 runs each on the same
@@ -56,10 +59,50 @@ Config `BepInEx\config\FastStartup.cfg`:
   startup.
 - `[LocalizationCache] Enabled` (default `true`): parse each vanilla localization CSV once per language.
 - `[HarmonyBatching] Enabled` (default `true`): one wrapper build per patched method per `Harmony.PatchAll(assembly)`.
+- `[ModHotspots] ShaderReplacer` (default `true`): run blacks7ar's ShaderReplacer helper (OreMines) with one
+  shader lookup instead of one per material.
 - `[Diagnostics] DumpHarmonyState` (default `false`): write the Harmony patch registry at the main menu to
   `BepInEx\FastStartup\harmony-state.txt` for diffing two setups.
+- `[Diagnostics] DumpModHotspots` (default `false`): write what the ModHotspots replacements produce (every
+  ShaderReplacer material and its shader) at the main menu to `BepInEx\FastStartup\modhotspots-state.txt`, for
+  diffing a toggle off against on.
 
-All keys are read once at launch.
+All keys are read once at launch. With any module on, the log gets `menu ready <s> s after process start` at the
+end of the first `FejdStartup.Start` (profiler off too).
+
+## Mod hotspots
+
+Slow startup code inside other mods, reimplemented with the same result. Many mods embed the same helper
+sources, so a replacement matches the helper by shape, not by mod: type/method/field names plus an IL fingerprint
+(SHA-256 over every instruction and operand of the method and its compiler-generated lambdas, the helper's
+namespace and the mod's anonymous-type numbering stripped). A helper with a different fingerprint is logged and left
+alone. Installed at the end of `Chainloader.Start` (after every plugin's Awake, before the menu scene).
+
+- **ShaderReplacer** (Harmony ID `blacks7ar.utilities.ShaderReplacer`, OreMines 1.x): its postfix on
+  `FejdStartup.Awake` calls `Resources.FindObjectsOfTypeAll<Shader>()` and compares names with every loaded shader
+  once per material of its 17 mine prefabs: 2.25 s. The replacement walks the same objects, renderers and materials in
+  the same order and makes the same assignments (every shader of the material's shader name, in
+  `FindObjectsOfTypeAll` order, so the last one wins), with the shader list read once and grouped by name: 0.19 s
+  (the rest is the walk and the `Material.shader` assignments themselves). SeedBed embeds the later variant of this
+  helper, which already uses a name dictionary (0.8 ms); its fingerprint differs and it is not touched.
+  Verified: `DumpModHotspots` (36051 lines, one per material slot: renderer path, material, shader name + index among same-named
+  shaders, render queue, keywords) byte-identical with the toggle off and on; `DumpHarmonyState` byte-identical
+  with every FastStartup module off and with all on (790 methods).
+
+Looked at and not replaced (profiler, `TimeModPatches`, warm):
+
+- Jotunn on `ObjectDB.CopyOtherDB`, 0.53 s: Jotunn's own part is `RegisterCustomDataFejd` (~50 ms); 0.48 s is other
+  mods' `PrefabManager.OnVanillaPrefabsAvailable` handlers (ChaosArmor `LoadItems` 197 ms: bundle asset loads +
+  `AddItem`; MonsterModifiers `CreateCustomPrefabs` 166 ms; AdventureBackpacks `InitializeBackpacks` 107 ms). The
+  biggest shared piece is Jotunn's `PrefabManager.Cache.InitCache(GameObject)` (first `GetPrefab` miss, 150-220 ms
+  over 25580 names). A rewrite that skips re-reading the parent of the already mapped object was proven equal
+  (in-process comparison against a reverse patch of the original, 0 differences for all 5 types) but saved only
+  ~23 ms: the cost is `FindObjectsOfTypeAll` and the name reads. Dropped.
+- Jotunn `ModQuery.FejdStartup_Awake_Postfix` (~150 ms): one Harmony patch per other mod's patch method on
+  ZNetScene/ObjectDB methods, each a separate wrapper build; nothing to batch.
+- PieceManager/CreatureManager `Patch_FejdStartup` (Warfare 190 ms, Wizardry 148 ms): per-piece/creature config
+  `Bind` + localization + a `new Regex` per piece; a replacement would reimplement the helper's config generation.
+- Seasonality `TextureReplacer` postfix (222 ms): generates seasonal textures; SkillManager (2 ms).
 
 ## Config save batcher
 
@@ -175,7 +218,10 @@ launch, which happens while the `start` scene loads.
 methods and reports them per owner in `summary.txt`. Hooking forces Mono to compile those methods early; for some
 methods (the ItemManager/PieceManager helpers in Warfare, Armory, Wizardry) that native compile crashes the game.
 The method being hooked is written to `BepInEx\FastStartup\patch-probe.pending` first, and after a crash the next
-launch moves it to `patch-probe.skip` and never hooks it again (5 launches to settle here).
+launch moves it to `patch-probe.skip` and never hooks it again (5 launches to settle here). The handlers other mods
+subscribe to Jotunn's events raised from `ObjectDB.CopyOtherDB` (`PrefabManager.OnVanillaPrefabsAvailable`,
+`ItemManager.OnItemsRegisteredFejd`, `CreatureManager.OnVanillaCreaturesAvailable`) are timed the same way, owner
+`Jotunn event handler [<mod>]`.
 
 ## Profiler output
 
