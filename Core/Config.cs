@@ -23,6 +23,10 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> DumpHarmonyState { get; private set; }
 
+        public static ConfigEntry<bool> ShaderReplacerFixEnabled { get; private set; }
+
+        public static ConfigEntry<bool> DumpModHotspots { get; private set; }
+
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
@@ -56,6 +60,13 @@ namespace FastStartup.Core
             DumpHarmonyState = file.Bind("Diagnostics", "DumpHarmonyState", false,
                 "At the main menu write every Harmony-patched method with its prefix/postfix/transpiler/finalizer owners to " +
                 "BepInEx\\FastStartup\\harmony-state.txt (FastStartup's own patches excluded), for diffing two setups.");
+            ShaderReplacerFixEnabled = file.Bind("ModHotspots", "ShaderReplacer", true,
+                "Run the ShaderReplacer helper embedded in blacks7ar mods (OreMines) with one shader lookup instead of one " +
+                "per material. Same shader assignments in the same order; only the known slow version of the helper is " +
+                "replaced (matched by its IL). Read once at launch.");
+            DumpModHotspots = file.Bind("Diagnostics", "DumpModHotspots", false,
+                "At the main menu write the state the ModHotspots replacements produce (e.g. every ShaderReplacer material " +
+                "and its shader) to BepInEx\\FastStartup\\modhotspots-state.txt, for diffing a toggle off against on.");
         }
     }
 }

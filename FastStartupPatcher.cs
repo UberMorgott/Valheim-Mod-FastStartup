@@ -3,6 +3,7 @@ using FastStartup.BundleCache;
 using FastStartup.ConfigSave;
 using FastStartup.Core;
 using FastStartup.HarmonyBatch;
+using FastStartup.ModHotspots;
 using FastStartup.Profiling;
 using FastStartup.Translations;
 using HarmonyLib;
@@ -24,6 +25,7 @@ namespace FastStartup
         private const string BundleCacheHarmonyId = "morgott.faststartup.bundlecache";
         private const string ConfigSaveHarmonyId = "morgott.faststartup.configsave";
         private const string HarmonyBatchHarmonyId = "morgott.faststartup.harmonybatch";
+        private const string ModHotspotsHarmonyId = "morgott.faststartup.modhotspots";
 
         public static IEnumerable<string> TargetDLLs { get; } = new string[0];
 
@@ -56,7 +58,9 @@ namespace FastStartup
                 bool harmonyBatching = Config.HarmonyBatchingEnabled?.Value == true;
                 bool localization = Config.LocalizationCacheEnabled?.Value == true;
                 bool dump = Config.DumpHarmonyState?.Value == true;
-                if (bundles || configSave || harmonyBatching || localization || dump)
+                bool hotspots = Config.ShaderReplacerFixEnabled?.Value == true;
+                bool hotspotsDump = Config.DumpModHotspots?.Value == true;
+                if (bundles || configSave || harmonyBatching || localization || dump || hotspots || hotspotsDump)
                 {
                     Lifecycle.Install(new Harmony(LifecycleHarmonyId));
                 }
@@ -81,6 +85,14 @@ namespace FastStartup
                 if (dump)
                 {
                     HarmonyStateDump.Install();
+                }
+                if (hotspots)
+                {
+                    ModHotspotsModule.Install(new Harmony(ModHotspotsHarmonyId));
+                }
+                if (hotspotsDump)
+                {
+                    ModHotspotsDump.Install();
                 }
             });
         }
