@@ -39,6 +39,10 @@ namespace FastStartup.Profiling
             Log.Guard("Plugin profiler install", () => PluginLifecycleProfiler.Install(_harmony));
             PluginLifecycleProfiler.ChainloaderInitialized += OnChainloaderInitialized;
             PluginLifecycleProfiler.ChainloaderStarted += () => Log.Guard("Jotunn probe install", () => JotunnProbe.Install(_harmony));
+            if (Config.ProfilerTimeModPatches.Value)
+            {
+                PluginLifecycleProfiler.ChainloaderStarted += () => Log.Guard("Patch owner probe install", () => PatchOwnerProbe.Install(_harmony));
+            }
             Log.Info("Profiler: preloader hooks installed");
         }
 

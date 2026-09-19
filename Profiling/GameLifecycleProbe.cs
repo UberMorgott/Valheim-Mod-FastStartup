@@ -28,7 +28,7 @@ namespace FastStartup.Profiling
         public static event Action MenuReady;
 
         // Citations: ValheimDecompiled-1.0.15\assembly_valheim\<File>.cs:<line>.
-        private static MethodInfo[] Targets() => new[]
+        internal static MethodInfo[] Targets() => new[]
         {
             AccessTools.DeclaredMethod(typeof(FejdStartup), "Awake"),         // FejdStartup.cs:307
             AccessTools.DeclaredMethod(typeof(FejdStartup), "Start"),         // FejdStartup.cs:427 (end = main menu ready)

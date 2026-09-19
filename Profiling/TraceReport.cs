@@ -173,8 +173,11 @@ namespace FastStartup.Profiling
             sb.AppendLine();
 
             List<TraceEvent> bundles = events.Where(e => e.Cat == "bundle").ToList();
-            sb.AppendLine(F("== AssetBundle loads: {0} calls, {1:F0} ms on calling threads ==", bundles.Count,
-                bundles.Sum(e => StartupTrace.DurMs(e.Start, e.End))));
+            // A cache hit loads its copy from inside the hooked stream load: count only outermost spans.
+            List<TraceEvent> outer = bundles.Where(e => !bundles.Any(p => p != e && p.Tid == e.Tid && p.Start <= e.Start &&
+                                                                         p.End >= e.End && (p.Start < e.Start || p.End > e.End))).ToList();
+            sb.AppendLine(F("== AssetBundle loads: {0} calls ({1} outermost), {2:F0} ms on calling threads ==", bundles.Count,
+                outer.Count, outer.Sum(e => StartupTrace.DurMs(e.Start, e.End))));
             foreach (TraceEvent e in bundles.OrderByDescending(e => e.End - e.Start).Take(TopN))
             {
                 sb.AppendLine(F("{0,10:F1}  {1,-20} {2,8:F1} MB  {3}", StartupTrace.DurMs(e.Start, e.End), e.Detail2,
@@ -198,6 +201,13 @@ namespace FastStartup.Profiling
             }).OrderByDescending(g => g.Incl))
             {
                 sb.AppendLine(F("{0,10:F1}  body {1,8:F1}  mods {2,8:F1}  {3,3}x  {4}", g.Incl, g.Body, g.Incl - g.Body, g.N, g.Name));
+            }
+            sb.AppendLine("  Mods' patches by owner (game.patch, inclusive ms, calls; transpilers count as body):");
+            foreach (var g in events.Where(e => e.Cat == "game.patch").GroupBy(e => e.Detail2 + "|" + e.Name)
+                         .Select(g => new { Target = g.First().Detail2, Owner = g.First().Name, N = g.Count(), Ms = g.Sum(e => StartupTrace.DurMs(e.Start, e.End)) })
+                         .OrderByDescending(g => g.Ms).Take(TopN))
+            {
+                sb.AppendLine(F("{0,10:F1} {1,4}x  {2,-28} {3}", g.Ms, g.N, g.Target, g.Owner));
             }
             foreach (TraceEvent e in events.Where(e => e.Cat == "jotunn").OrderByDescending(e => e.End - e.Start).Take(15))
             {
