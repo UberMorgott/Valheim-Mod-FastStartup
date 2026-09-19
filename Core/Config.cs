@@ -17,6 +17,8 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> ConfigSaveBatcherEnabled { get; private set; }
 
+        public static ConfigEntry<bool> LocalizationCacheEnabled { get; private set; }
+
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
@@ -39,6 +41,10 @@ namespace FastStartup.Core
                 "While the chainloader loads plugins, write each changed .cfg once at the end instead of on every Bind/value " +
                 "change (BepInEx rewrites the whole file each time). Also flushed before a pending file is reloaded and on " +
                 "process exit. Read once at launch.");
+            LocalizationCacheEnabled = file.Bind("LocalizationCache", "Enabled", true,
+                "Parse each vanilla localization CSV once per language and replay its rows on later loads (in memory, this " +
+                "session only). Other mods' localization patches still run; switching language rebuilds the table exactly as " +
+                "vanilla. Read once at launch.");
         }
     }
 }

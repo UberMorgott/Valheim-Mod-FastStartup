@@ -3,6 +3,7 @@ using FastStartup.BundleCache;
 using FastStartup.ConfigSave;
 using FastStartup.Core;
 using FastStartup.Profiling;
+using FastStartup.Translations;
 using HarmonyLib;
 using Mono.Cecil;
 
@@ -17,6 +18,7 @@ namespace FastStartup
     public static class FastStartupPatcher
     {
         // Every FastStartup Harmony ID starts with "morgott.faststartup." so its own patches are recognizable.
+        public const string LocalizationHarmonyId = "morgott.faststartup.localization";
         private const string LifecycleHarmonyId = "morgott.faststartup.lifecycle";
         private const string BundleCacheHarmonyId = "morgott.faststartup.bundlecache";
         private const string ConfigSaveHarmonyId = "morgott.faststartup.configsave";
@@ -49,7 +51,8 @@ namespace FastStartup
                 }
                 bool bundles = Config.BundleCacheEnabled?.Value == true;
                 bool configSave = Config.ConfigSaveBatcherEnabled?.Value == true;
-                if (bundles || configSave)
+                bool localization = Config.LocalizationCacheEnabled?.Value == true;
+                if (bundles || configSave || localization)
                 {
                     Lifecycle.Install(new Harmony(LifecycleHarmonyId));
                 }
@@ -60,6 +63,12 @@ namespace FastStartup
                 if (bundles)
                 {
                     Log.Guard("BundleCache install", () => BundleCacheModule.Install(new Harmony(BundleCacheHarmonyId)));
+                }
+                if (localization)
+                {
+                    // Touches assembly_guiutils types: only once the engine is up.
+                    Lifecycle.ChainloaderInitialized += () =>
+                        Log.Guard("LocalizationCache install", () => LocalizationCache.Install(new Harmony(LocalizationHarmonyId)));
                 }
             });
         }
