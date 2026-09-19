@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using FastStartup.BundleCache;
 using FastStartup.ConfigSave;
 using FastStartup.Core;
+using FastStartup.HarmonyBatch;
 using FastStartup.Profiling;
 using FastStartup.Translations;
 using HarmonyLib;
@@ -22,6 +23,7 @@ namespace FastStartup
         private const string LifecycleHarmonyId = "morgott.faststartup.lifecycle";
         private const string BundleCacheHarmonyId = "morgott.faststartup.bundlecache";
         private const string ConfigSaveHarmonyId = "morgott.faststartup.configsave";
+        private const string HarmonyBatchHarmonyId = "morgott.faststartup.harmonybatch";
 
         public static IEnumerable<string> TargetDLLs { get; } = new string[0];
 
@@ -51,14 +53,19 @@ namespace FastStartup
                 }
                 bool bundles = Config.BundleCacheEnabled?.Value == true;
                 bool configSave = Config.ConfigSaveBatcherEnabled?.Value == true;
+                bool harmonyBatching = Config.HarmonyBatchingEnabled?.Value == true;
                 bool localization = Config.LocalizationCacheEnabled?.Value == true;
-                if (bundles || configSave || localization)
+                if (bundles || configSave || harmonyBatching || localization)
                 {
                     Lifecycle.Install(new Harmony(LifecycleHarmonyId));
                 }
                 if (configSave)
                 {
                     Log.Guard("ConfigSaveBatcher install", () => ConfigSaveBatcher.Install(new Harmony(ConfigSaveHarmonyId)));
+                }
+                if (harmonyBatching)
+                {
+                    Log.Guard("HarmonyBatching install", () => HarmonyBatcher.Install(new Harmony(HarmonyBatchHarmonyId)));
                 }
                 if (bundles)
                 {

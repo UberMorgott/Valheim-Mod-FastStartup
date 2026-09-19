@@ -19,6 +19,8 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> LocalizationCacheEnabled { get; private set; }
 
+        public static ConfigEntry<bool> HarmonyBatchingEnabled { get; private set; }
+
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
@@ -45,6 +47,9 @@ namespace FastStartup.Core
                 "Parse each vanilla localization CSV once per language and replay its rows on later loads (in memory, this " +
                 "session only). Other mods' localization patches still run; switching language rebuilds the table exactly as " +
                 "vanilla. Read once at launch.");
+            HarmonyBatchingEnabled = file.Bind("HarmonyBatching", "Enabled", true,
+                "Inside one Harmony.PatchAll(assembly) call, build each patched method's wrapper once at the end of that " +
+                "call instead of once per patch. Patch registration is unchanged. Read once at launch.");
         }
     }
 }

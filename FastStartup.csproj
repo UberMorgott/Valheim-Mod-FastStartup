@@ -39,6 +39,10 @@
       <HintPath>$(BepInExCoreDir)\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="MonoMod.RuntimeDetour">
+      <HintPath>$(BepInExCoreDir)\MonoMod.RuntimeDetour.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Mono.Cecil">
       <HintPath>$(BepInExCoreDir)\Mono.Cecil.dll</HintPath>
       <Private>false</Private>
