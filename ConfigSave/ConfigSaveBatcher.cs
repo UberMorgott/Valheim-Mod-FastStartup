@@ -11,8 +11,8 @@ namespace FastStartup.ConfigSave
 {
     /// <summary>
     /// BepInEx 5.4.23 <c>ConfigFile.Bind</c> and every value change call <c>Save()</c> while <c>SaveOnConfigSet</c> is
-    /// true, and <c>Save()</c> rewrites the whole file: 1131 writes during startup here (735 while plugins load, 373
-    /// more from one plugin while the menu scene builds). From <c>Chainloader.Start</c> until the main menu is ready,
+    /// true, and <c>Save()</c> rewrites the whole file: ~1130 writes during startup here (~730 while plugins load, ~400
+    /// more from AdventureBackpacks while the menu scene builds). From <c>Chainloader.Start</c> until the main menu is ready,
     /// <c>Save()</c> only records the file (once); every recorded file is written once at the end of
     /// <c>Chainloader.Start</c> (finalizer: also when it throws) and again at the main menu, where deferring stops.
     /// Nothing else changes: <c>SaveOnConfigSet</c> is never touched, so mods read the value they set.
