@@ -55,7 +55,8 @@ namespace FastStartup
                 bool configSave = Config.ConfigSaveBatcherEnabled?.Value == true;
                 bool harmonyBatching = Config.HarmonyBatchingEnabled?.Value == true;
                 bool localization = Config.LocalizationCacheEnabled?.Value == true;
-                if (bundles || configSave || harmonyBatching || localization)
+                bool dump = Config.DumpHarmonyState?.Value == true;
+                if (bundles || configSave || harmonyBatching || localization || dump)
                 {
                     Lifecycle.Install(new Harmony(LifecycleHarmonyId));
                 }
@@ -76,6 +77,10 @@ namespace FastStartup
                     // Touches assembly_guiutils types: only once the engine is up.
                     Lifecycle.ChainloaderInitialized += () =>
                         Log.Guard("LocalizationCache install", () => LocalizationCache.Install(new Harmony(LocalizationHarmonyId)));
+                }
+                if (dump)
+                {
+                    HarmonyStateDump.Install();
                 }
             });
         }
