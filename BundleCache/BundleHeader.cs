@@ -32,12 +32,34 @@ namespace FastStartup.BundleCache
         private const int MaxTableSize = 64 * 1024 * 1024;
 
         /// <summary>Classifies the bundle at the stream's current position; restores the position afterwards.</summary>
-        public static BundleCompression Classify(Stream stream)
+        public static BundleCompression Classify(Stream stream) => Classify(stream, out _);
+
+        /// <summary>
+        /// True when <paramref name="path"/> is a complete LZ4/uncompressed UnityFS file: readable block table, no
+        /// LZMA block, and the header's total size equals the file length (catches a truncated or foreign file).
+        /// </summary>
+        public static bool IsCompleteCopy(string path)
         {
+            try
+            {
+                using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    return Classify(file, out long size) == BundleCompression.NotLzma && size == file.Length;
+                }
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private static BundleCompression Classify(Stream stream, out long size)
+        {
+            size = -1;
             long origin = stream.Position;
             try
             {
-                return Classify(stream, origin);
+                return Classify(stream, origin, out size);
             }
             catch (Exception e) when (e is IOException || e is InvalidDataException || e is IndexOutOfRangeException ||
                                       e is ArgumentException || e is EndOfStreamException)
@@ -50,16 +72,9 @@ namespace FastStartup.BundleCache
             }
         }
 
-        public static BundleCompression Classify(string path)
+        private static BundleCompression Classify(Stream stream, long origin, out long size)
         {
-            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            {
-                return Classify(file);
-            }
-        }
-
-        private static BundleCompression Classify(Stream stream, long origin)
-        {
+            size = -1;
             var reader = new BigEndianReader(stream);
             if (reader.CString() != "UnityFS")
             {
@@ -68,7 +83,7 @@ namespace FastStartup.BundleCache
             uint version = reader.UInt32();
             reader.CString();
             reader.CString();
-            reader.Int64();
+            size = reader.Int64();
             uint compressedSize = reader.UInt32();
             uint uncompressedSize = reader.UInt32();
             uint flags = reader.UInt32();

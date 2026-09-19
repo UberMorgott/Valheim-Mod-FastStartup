@@ -144,10 +144,17 @@ namespace FastStartup.BundleCache
                 string path = _store.PathOf(source);
                 if (File.Exists(path))
                 {
-                    _store.MarkUsed(source.FileName);
-                    _hits++;
-                    _hitBytes += source.Length;
-                    return path;
+                    // Checked on every hit (header + block table, ~KB): an async hit cannot fall back once the
+                    // original load is suppressed, so a truncated or foreign copy must be rejected here.
+                    if (BundleHeader.IsCompleteCopy(path))
+                    {
+                        _store.MarkUsed(source.FileName);
+                        _hits++;
+                        _hitBytes += source.Length;
+                        return path;
+                    }
+                    Log.WarningOnce(LogKey + "invalid." + source.FileName, $"BundleCache: cached copy of {source.Label} is incomplete, rebuilding it");
+                    TryDelete(path);
                 }
                 switch (BundleHeader.Classify(stream))
                 {
@@ -328,7 +335,7 @@ namespace FastStartup.BundleCache
         private static void Store(ResourceSource source, string input, string output, bool success, string result)
         {
             TryDelete(input);
-            if (!success || !File.Exists(output) || BundleHeader.Classify(output) != BundleCompression.NotLzma)
+            if (!success || !BundleHeader.IsCompleteCopy(output))
             {
                 Log.WarningOnce(LogKey + "store." + source.Label, $"BundleCache: recompress of {source.Label} failed ({result}), it stays uncached");
                 TryDelete(output);

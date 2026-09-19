@@ -34,6 +34,7 @@ namespace FastStartup.Profiling
 
         public static void Install(Harmony harmony)
         {
+            Directory.CreateDirectory(Dir);
             string pendingPath = Path.Combine(Dir, "patch-probe.pending");
             string skipPath = Path.Combine(Dir, "patch-probe.skip");
             var skip = new HashSet<string>(File.Exists(skipPath) ? File.ReadAllLines(skipPath) : new string[0]);
