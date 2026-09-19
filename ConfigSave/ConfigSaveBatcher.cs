@@ -16,15 +16,19 @@ namespace FastStartup.ConfigSave
     /// <c>Save()</c> only records the file (once); every recorded file is written once at the end of
     /// <c>Chainloader.Start</c> (finalizer: also when it throws) and again at the main menu, where deferring stops.
     /// Nothing else changes: <c>SaveOnConfigSet</c> is never touched, so mods read the value they set.
-    /// Disk stays authoritative for readers inside BepInEx: a <c>Reload()</c> of a pending file writes it first
-    /// (Reload would otherwise re-read the older disk copy). Process exit/domain unload also flush (quit before the
-    /// menu). After the main menu the module is inert.
+    /// A <c>Reload()</c> of a pending file writes it first (Reload would otherwise re-read the older disk copy),
+    /// unless the file changed on disk since this module last saw it (an edit by the user or another process, picked
+    /// up by a mod's file watcher): then the reload reads that edit, as it would without deferring, and the file stays
+    /// pending. Process exit/domain unload also flush (quit before the menu). After the main menu the module is inert.
     /// </summary>
     internal static class ConfigSaveBatcher
     {
         private static readonly object Lock = new object();
         private static readonly List<ConfigFile> Pending = new List<ConfigFile>();
-        private static readonly HashSet<ConfigFile> PendingSet = new HashSet<ConfigFile>();
+
+        /// <summary>Pending file -> its disk stamp when this module last saw it (first deferral or last reload).</summary>
+        private static readonly Dictionary<ConfigFile, DiskStamp> Stamps = new Dictionary<ConfigFile, DiskStamp>();
+
         private static bool _active;
         private static int _deferred;
 
@@ -68,8 +72,9 @@ namespace FastStartup.ConfigSave
                     return true;
                 }
                 _deferred++;
-                if (PendingSet.Add(__instance))
+                if (!Stamps.ContainsKey(__instance))
                 {
+                    Stamps[__instance] = DiskStamp.Read(__instance.ConfigFilePath);
                     Pending.Add(__instance);
                 }
                 return false;
@@ -80,10 +85,19 @@ namespace FastStartup.ConfigSave
         {
             lock (Lock)
             {
-                if (!_active || !PendingSet.Remove(__instance))
+                if (!_active || !Stamps.TryGetValue(__instance, out DiskStamp seen))
                 {
                     return;
                 }
+                DiskStamp now = DiskStamp.Read(__instance.ConfigFilePath);
+                if (!now.Equals(seen))
+                {
+                    // Edited outside: Reload reads the edit; the merged state is written at the next flush.
+                    Stamps[__instance] = now;
+                    Log.Info($"ConfigSaveBatcher: {Path.GetFileName(__instance.ConfigFilePath)} changed on disk, reloaded before its deferred save");
+                    return;
+                }
+                Stamps.Remove(__instance);
                 Pending.Remove(__instance);
             }
             SaveNow(__instance);
@@ -105,7 +119,7 @@ namespace FastStartup.ConfigSave
                 deferred = _deferred;
                 _deferred = 0;
                 Pending.Clear();
-                PendingSet.Clear();
+                Stamps.Clear();
             }
             Stopwatch watch = Stopwatch.StartNew();
             int failed = 0;
@@ -138,6 +152,21 @@ namespace FastStartup.ConfigSave
             {
                 _bypass = false;
             }
+        }
+
+        /// <summary>Last write time + length of a file (both 0 when it does not exist).</summary>
+        private struct DiskStamp : IEquatable<DiskStamp>
+        {
+            private long _ticks;
+            private long _length;
+
+            public static DiskStamp Read(string path)
+            {
+                var info = new FileInfo(path);
+                return info.Exists ? new DiskStamp { _ticks = info.LastWriteTimeUtc.Ticks, _length = info.Length } : default;
+            }
+
+            public bool Equals(DiskStamp other) => _ticks == other._ticks && _length == other._length;
         }
     }
 }

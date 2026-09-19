@@ -69,7 +69,10 @@ here: 727 while plugins load, 395 more from AdventureBackpacks while the menu sc
 - From `Chainloader.Start` until the main menu, `ConfigFile.Save()` only records the file (once per file).
 - Recorded files are written at the end of `Chainloader.Start` (a finalizer, so also when it throws) and again at
   the main menu, where deferring stops for good. Process exit and domain unload also flush.
-- `ConfigFile.Reload()` of a recorded file writes it first, so a reload never reads an older disk copy.
+- `ConfigFile.Reload()` of a recorded file writes it first, so a reload never reads an older disk copy. If the
+  file changed on disk since FastStartup last saw it (last write time + length), e.g. the user edited it and a
+  mod's file watcher reloads it, the reload reads that edit instead and the merged state is written at the next
+  flush.
 - `SaveOnConfigSet` is never touched: mods read back exactly what they set.
 - Limits: a crash (native, no managed exit) before the main menu loses values set in memory since the last flush;
   `Bind` defaults are written again on the next launch anyway. A write error is logged by FastStartup instead of
