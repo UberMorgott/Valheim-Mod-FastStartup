@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Globalization;
 using BepInEx.Bootstrap;
 using HarmonyLib;
 
@@ -7,8 +9,9 @@ namespace FastStartup.Core
     /// <summary>
     /// Startup milestones for modules that do not depend on the profiler. <see cref="ChainloaderInitialized"/> =
     /// end of <c>Chainloader.Initialize</c> (Unity is up, game assemblies resolvable, no plugin loaded yet);
+    /// <see cref="ChainloaderStarted"/> = end of <c>Chainloader.Start</c> (every plugin's Awake has run);
     /// <see cref="MenuReady"/> = end of the first <c>FejdStartup.Start</c> (FejdStartup.cs:427, builds the main menu).
-    /// Both are raised on the Unity main thread.
+    /// All are raised on the Unity main thread.
     /// </summary>
     internal static class Lifecycle
     {
@@ -16,6 +19,8 @@ namespace FastStartup.Core
         private static bool _menuReady;
 
         public static event Action ChainloaderInitialized;
+
+        public static event Action ChainloaderStarted;
 
         public static event Action MenuReady;
 
@@ -29,9 +34,17 @@ namespace FastStartup.Core
 
         private static void InitializePostfix()
         {
+            Log.Guard("Chainloader.Start hook", () => _harmony.Patch(AccessTools.Method(typeof(Chainloader), nameof(Chainloader.Start)),
+                finalizer: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(StartFinalizer)), Priority.Last)));
             Log.Guard("FejdStartup.Start hook", () => _harmony.Patch(AccessTools.DeclaredMethod(typeof(FejdStartup), "Start"),
                 postfix: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(FejdStartupPostfix)))));
             Log.Guard("ChainloaderInitialized handlers", () => ChainloaderInitialized?.Invoke());
+        }
+
+        // Finalizer, Priority.Last: after the other Chainloader.Start postfixes/finalizers, also when it throws.
+        private static void StartFinalizer()
+        {
+            Log.Guard("ChainloaderStarted handlers", () => ChainloaderStarted?.Invoke());
         }
 
         private static void FejdStartupPostfix()
@@ -41,6 +54,9 @@ namespace FastStartup.Core
                 return;
             }
             _menuReady = true;
+            Log.Guard("Menu ready time", () =>
+                Log.Info(string.Format(CultureInfo.InvariantCulture, "menu ready {0:F2} s after process start",
+                    (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalSeconds)));
             Log.Guard("MenuReady handlers", () => MenuReady?.Invoke());
         }
     }
