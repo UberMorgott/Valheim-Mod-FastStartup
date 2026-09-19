@@ -59,29 +59,76 @@ namespace FastStartup.Profiling
                 }
                 foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers))
                 {
-                    MethodInfo method = patch.PatchMethod;
-                    string id = Identity(method);
-                    if (patch.owner.StartsWith("morgott.faststartup", StringComparison.Ordinal) || Owners.ContainsKey(method) || skip.Contains(id))
+                    if (!patch.owner.StartsWith("morgott.faststartup", StringComparison.Ordinal) &&
+                        Wrap(harmony, patch.PatchMethod, patch.owner, target.DeclaringType?.Name + "." + target.Name, pendingPath, skip))
                     {
-                        continue;
-                    }
-                    try
-                    {
-                        File.WriteAllText(pendingPath, id);
-                        harmony.Patch(method,
-                            prefix: new HarmonyMethod(AccessTools.Method(typeof(PatchOwnerProbe), nameof(Prefix)), Priority.First),
-                            finalizer: new HarmonyMethod(AccessTools.Method(typeof(PatchOwnerProbe), nameof(Finalizer)), Priority.Last));
-                        Owners[method] = (patch.owner + " [" + method.Module.Assembly.GetName().Name + "]", target.DeclaringType?.Name + "." + target.Name);
                         wrapped++;
                     }
-                    catch (Exception e)
-                    {
-                        Log.Warning($"Patch owner probe: cannot time {id} ({patch.owner}): {e.Message}");
-                    }
+                }
+            }
+            foreach ((MethodInfo method, string eventName) in JotunnEventSubscribers())
+            {
+                if (Wrap(harmony, method, "Jotunn event handler", "Jotunn " + eventName, pendingPath, skip))
+                {
+                    wrapped++;
                 }
             }
             File.Delete(pendingPath);
             Log.Info($"Patch owner probe: {wrapped} mod patch methods on game startup methods timed, {skip.Count} skipped");
+        }
+
+        private static bool Wrap(Harmony harmony, MethodInfo method, string owner, string target, string pendingPath, HashSet<string> skip)
+        {
+            string id = Identity(method);
+            if (Owners.ContainsKey(method) || skip.Contains(id))
+            {
+                return false;
+            }
+            try
+            {
+                File.WriteAllText(pendingPath, id);
+                harmony.Patch(method,
+                    prefix: new HarmonyMethod(AccessTools.Method(typeof(PatchOwnerProbe), nameof(Prefix)), Priority.First),
+                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(PatchOwnerProbe), nameof(Finalizer)), Priority.Last));
+                Owners[method] = (owner + " [" + method.Module.Assembly.GetName().Name + "]", target);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Patch owner probe: cannot time {id} ({owner}): {e.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Handlers subscribed (during plugin Awake) to the Jotunn events raised from Jotunn's
+        /// <c>ObjectDB.CopyOtherDB</c> patches (Jotunn 2.30.1: PrefabManager.OnVanillaPrefabsAvailable,
+        /// ItemManager.OnItemsRegisteredFejd, CreatureManager.OnVanillaCreaturesAvailable; static event fields).</summary>
+        private static IEnumerable<(MethodInfo, string)> JotunnEventSubscribers()
+        {
+            Assembly jotunn = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Jotunn");
+            if (jotunn == null)
+            {
+                yield break;
+            }
+            foreach ((string type, string field) in new[]
+                     {
+                         ("Jotunn.Managers.PrefabManager", "OnVanillaPrefabsAvailable"),
+                         ("Jotunn.Managers.ItemManager", "OnItemsRegisteredFejd"),
+                         ("Jotunn.Managers.CreatureManager", "OnVanillaCreaturesAvailable"),
+                     })
+            {
+                FieldInfo info = jotunn.GetType(type)?.GetField(field, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                if (info?.GetValue(null) is Delegate handlers)
+                {
+                    foreach (Delegate handler in handlers.GetInvocationList())
+                    {
+                        if (handler.Method is MethodInfo method && !method.IsAbstract)
+                        {
+                            yield return (method, field);
+                        }
+                    }
+                }
+            }
         }
 
         /// <summary>Stable across launches of the same build: assembly name + MVID + metadata token + readable name.</summary>
