@@ -1,0 +1,77 @@
+# Lefthook owns the git hook wiring; this gate owns the checks.
+# Installed by `qgate wire`, activated by `lefthook install`.
+#
+# VERIFIED TRAP (lefthook 2.1.12, Windows): a job written as
+#   run: pwsh -NoProfile -Command "exit 1"
+# is reported as SUCCESS -- the exit code is swallowed. A bare executable
+# propagates it correctly, and so does `pwsh -NoProfile -File <script>`. Never
+# -Command, never wrapped in `cmd /c` (also swallows it). Related: lefthook
+# issue #1256.
+#
+# The `.cmd` is LOAD-BEARING, not a typo: lefthook runs jobs through a Git shell
+# on Windows, which does not apply PATHEXT. Bare `qgate` gives "command not
+# found" (exit 127) because bin/ holds qgate.cmd and qgate.ps1, no extensionless
+# file. `pwsh -File <path>` is not an option either -- with a global install the
+# gate's path is machine-specific and cannot be committed.
+#
+# SECOND VERIFIED TRAP: this used to probe with `command -v qgate.cmd`, and that
+# is FALSE under sh.exe even though qgate.cmd runs there. Same machine, same PATH:
+#
+#   sh.exe   -c 'command -v qgate.cmd'  -> 1   (not found)
+#   sh.exe   -c 'qgate.cmd where'       -> 0   (runs)
+#   bash.exe -c 'command -v qgate.cmd'  -> 0   /e/DEV/quality-gate/bin/qgate.cmd
+#
+# `lefthook run pre-commit` typed in a shell resolved through bash and passed; a
+# real `git commit` goes through sh and took the else branch, so the hook exited
+# 127 and BLOCKED THE COMMIT. Switch on the platform, never probe.
+#
+# THIRD VERIFIED TRAP, found replacing the second: lefthook STRIPS QUOTES from
+# this string before handing it to the shell. `case "$(uname -s)"` arrived as
+# `case $(uname` + `-s)` -> "unexpected EOF"; `grep -qE "MSYS|MINGW|CYGWIN"` lost
+# its quotes and the bare `|` became two pipes -> "MINGW: command not found".
+# So this line must contain NO quotes at all. `uname -o` is one word -- Msys under
+# both Git\usr\bin\sh.exe and Git\bin\bash.exe -- which is why it is used here
+# instead of `uname -s`, whose values differ (MSYS_NT vs MINGW64_NT) and would
+# need an alternation. On a POSIX box `uname -o` either prints something else or
+# fails, and either way the else branch is the right one.
+#
+# -Quiet because in an agent workflow a commit is a tool call, and a hook's stdout
+# is read back into the model's context and paid for. Measured on a three-stack
+# monorepo: 342 characters of [PASS] lines per commit, on a project whose rule is
+# to commit every change. -Quiet suppresses output only on a GREEN run -- a failure
+# still prints everything (check.ps1). CI keeps its output: that is where the
+# [PASS] lines earn their keep, which is why this is not a global default.
+pre-commit:
+  jobs:
+    - &quality_gate
+      name: quality-gate
+      run: 'if uname -o 2>/dev/null | grep -q Msys; then qgate.cmd -All -Full -Quiet; else qgate -All -Full -Quiet; fi'
+
+# A merge that commits on its own does NOT run pre-commit: git runs
+# pre-merge-commit for that. Measured on git 2.53 -- with only pre-commit
+# installed, `git merge --no-ff` lands the merge commit and NO hook runs at all.
+# Two branches that are each clean can merge into a tree that does not build (both
+# sides adding the same field is a clean textual merge and a redeclaration), so the
+# break walks onto main and the next ordinary commit is the one that gets blocked,
+# by a failure it did not cause.
+#
+# The YAML anchor is deliberate: one run line, two hooks. Duplicating that
+# carefully-won string is how the two would drift apart, which has already happened
+# once in this repo between the template and the advice printed next to it.
+#
+# Not covered here, because git offers nothing to cover it with: `git cherry-pick`
+# and `git revert` run neither hook (measured -- only prepare-commit-msg and
+# post-commit fire). prepare-commit-msg CAN abort them, but it receives source
+# "message" for an ordinary commit too, so wiring the gate there would run it twice
+# on every normal commit. `git commit --amend` and `git merge --squash` both go
+# through pre-commit and are already covered.
+pre-merge-commit:
+  jobs:
+    - *quality_gate
+
+# The agent Stop hook is deliberately NOT generated through lefthook's `ai:`
+# key. Measured on 2.1.12: the generated command is `lefthook run <hook>`, which
+# exits 1 on failure -- but Claude Code only blocks the turn on exit **2**, so
+# the generated wiring runs the gate and then lets the agent finish anyway. It
+# also has no retry cap. `qgate stop-hook` does both, and `qgate wire` puts it
+# into .claude/settings.json for you.
