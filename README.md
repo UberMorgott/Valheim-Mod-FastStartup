@@ -43,7 +43,7 @@ work between hooked calls shows up as the gap between menu-ready time and the ho
 
 ## Build
 
-```
+```powershell
 dotnet build -c Release
 ```
 
