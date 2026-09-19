@@ -43,7 +43,8 @@ namespace FastStartup.ConfigSave
             harmony.Patch(AccessTools.DeclaredMethod(typeof(ConfigFile), nameof(ConfigFile.Save)),
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(SavePrefix)), Priority.Last));
             harmony.Patch(AccessTools.DeclaredMethod(typeof(ConfigFile), nameof(ConfigFile.Reload)),
-                prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(ReloadPrefix)), Priority.First));
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(ReloadPrefix)), Priority.First),
+                postfix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(ReloadPostfix)), Priority.Last));
             Lifecycle.MenuReady += () => Flush("main menu", stop: true);
             AppDomain.CurrentDomain.ProcessExit += (_, __) => Flush("process exit", stop: true);
             AppDomain.CurrentDomain.DomainUnload += (_, __) => Flush("domain unload", stop: true);
@@ -81,8 +82,9 @@ namespace FastStartup.ConfigSave
             }
         }
 
-        private static void ReloadPrefix(ConfigFile __instance)
+        private static void ReloadPrefix(ConfigFile __instance, out DiskStamp? __state)
         {
+            __state = null;
             lock (Lock)
             {
                 if (!_active || !Stamps.TryGetValue(__instance, out DiskStamp seen))
@@ -92,8 +94,10 @@ namespace FastStartup.ConfigSave
                 DiskStamp now = DiskStamp.Read(__instance.ConfigFilePath);
                 if (!now.Equals(seen))
                 {
-                    // Edited outside: Reload reads the edit; the merged state is written at the next flush.
-                    Stamps[__instance] = now;
+                    // Edited outside: Reload reads the edit; the merged state is written at the next flush. The stamp
+                    // is moved to the edit only once Reload has read it (postfix): if Reload throws (file still locked
+                    // by the editor), a retry must still see the edit as unread instead of overwriting it.
+                    __state = now;
                     Log.Info($"ConfigSaveBatcher: {Path.GetFileName(__instance.ConfigFilePath)} changed on disk, reloaded before its deferred save");
                     return;
                 }
@@ -101,6 +105,22 @@ namespace FastStartup.ConfigSave
                 Pending.Remove(__instance);
             }
             SaveNow(__instance);
+        }
+
+        /// <summary>Runs only when Reload ran and returned normally, i.e. the external edit was read.</summary>
+        private static void ReloadPostfix(ConfigFile __instance, DiskStamp? __state, bool __runOriginal)
+        {
+            if (__state == null || !__runOriginal)
+            {
+                return;
+            }
+            lock (Lock)
+            {
+                if (Stamps.ContainsKey(__instance))
+                {
+                    Stamps[__instance] = __state.Value;
+                }
+            }
         }
 
         /// <summary>Writes every pending file once (in first-save order); with <paramref name="stop"/> deferring ends.</summary>
