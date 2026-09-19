@@ -256,3 +256,7 @@ dotnet build -c Release
 
 References come from `D:\Steam\steamapps\common\Valheim` (`BepInEx\core`, `valheim_Data\Managed`); override
 with `-p:ValheimDir=...`.
+
+## Licence
+
+CC BY-NC 4.0, see [LICENSE](LICENSE). Copyright (c) 2026 Morgott.
