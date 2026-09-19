@@ -37,6 +37,7 @@ namespace FastStartup.Profiling
             _harmony = new Harmony(HarmonyId);
             Log.Guard("Harmony profiler install", () => HarmonyProfiler.Install(_harmony));
             Log.Guard("Plugin profiler install", () => PluginLifecycleProfiler.Install(_harmony));
+            Log.Guard("Config save profiler install", () => ConfigSaveProfiler.Install(_harmony));
             PluginLifecycleProfiler.ChainloaderInitialized += OnChainloaderInitialized;
             PluginLifecycleProfiler.ChainloaderStarted += () => Log.Guard("Jotunn probe install", () => JotunnProbe.Install(_harmony));
             if (Config.ProfilerTimeModPatches.Value)

@@ -38,6 +38,9 @@ namespace FastStartup.Profiling
             AccessTools.DeclaredMethod(typeof(ObjectDB), "CopyOtherDB"),      // ObjectDB.cs:41
             AccessTools.DeclaredMethod(typeof(ObjectDB), "UpdateRegisters"),  // ObjectDB.cs:50
             AccessTools.DeclaredMethod(typeof(ZNetScene), "Awake"),           // ZNetScene.cs:33
+            // assembly_guiutils\Localization.cs:506/525: SetupLanguage = one LoadCSV per vanilla CSV (+ mods' patches).
+            AccessTools.DeclaredMethod(typeof(Localization), "SetupLanguage"),
+            AccessTools.DeclaredMethod(typeof(Localization), "LoadCSV"),
         };
 
         public static void Install(Harmony harmony)
