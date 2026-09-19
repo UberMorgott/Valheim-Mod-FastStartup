@@ -11,6 +11,10 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> ProfilerTimeModPatches { get; private set; }
 
+        public static ConfigEntry<bool> BundleCacheEnabled { get; private set; }
+
+        public static ConfigEntry<int> BundleCacheMaxSizeMB { get; private set; }
+
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
@@ -22,6 +26,13 @@ namespace FastStartup.Core
                 "Diagnostic only: hooking forces Mono to compile those methods early, which crashed the game once on a method " +
                 "Mono could not compile that way; such a method is skipped automatically from the next launch on " +
                 "(BepInEx\\FastStartup\\patch-probe.skip).");
+            BundleCacheEnabled = file.Bind("BundleCache", "Enabled", true,
+                "Serve LZMA asset bundles that mods embed in their DLLs from an LZ4 copy cached under " +
+                "BepInEx\\FastStartup\\cache\\bundles (game folder). Copies are made in the background after the main menu; " +
+                "the first launch loads the originals. Read once at launch.");
+            BundleCacheMaxSizeMB = file.Bind("BundleCache", "MaxCacheSizeMB", 2048,
+                new ConfigDescription("Cache size cap. Least recently used copies beyond it are deleted after the main menu " +
+                                      "(copies used in the current session are kept).", new AcceptableValueRange<int>(64, 65536)));
         }
     }
 }

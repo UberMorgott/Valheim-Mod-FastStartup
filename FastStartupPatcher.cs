@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using FastStartup.BundleCache;
 using FastStartup.Core;
 using FastStartup.Profiling;
+using HarmonyLib;
 using Mono.Cecil;
 
 namespace FastStartup
@@ -13,6 +15,8 @@ namespace FastStartup
     /// </summary>
     public static class FastStartupPatcher
     {
+        private const string BundleCacheHarmonyId = "morgott.faststartup.bundlecache";
+
         public static IEnumerable<string> TargetDLLs { get; } = new string[0];
 
         public static void Patch(AssemblyDefinition assembly)
@@ -38,6 +42,12 @@ namespace FastStartup
                 if (Config.ProfilerEnabled?.Value == true)
                 {
                     Profiler.InstallRuntimeHooks();
+                }
+                if (Config.BundleCacheEnabled?.Value == true)
+                {
+                    var harmony = new Harmony(BundleCacheHarmonyId);
+                    Lifecycle.Install(harmony);
+                    BundleCacheModule.Install(harmony);
                 }
             });
         }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using BepInEx.Logging;
 
 namespace FastStartup.Core
@@ -7,6 +8,7 @@ namespace FastStartup.Core
     internal static class Log
     {
         private static readonly ManualLogSource Source = Logger.CreateLogSource("FastStartup");
+        private static readonly HashSet<string> Logged = new HashSet<string>();
 
         public static void Info(string message) => Source.LogInfo(message);
 
@@ -14,7 +16,33 @@ namespace FastStartup.Core
 
         public static void Error(string message) => Source.LogError(message);
 
-        /// <summary>Runs <paramref name="action"/> and logs instead of throwing: the profiler must never break the game.</summary>
+        /// <summary>Logs a warning the first time <paramref name="key"/> is seen in this process: hot paths (every bundle
+        /// load) must not flood the log with the same failure.</summary>
+        public static void WarningOnce(string key, string message)
+        {
+            if (First(key))
+            {
+                Warning(message);
+            }
+        }
+
+        public static void InfoOnce(string key, string message)
+        {
+            if (First(key))
+            {
+                Info(message);
+            }
+        }
+
+        private static bool First(string key)
+        {
+            lock (Logged)
+            {
+                return Logged.Add(key);
+            }
+        }
+
+        /// <summary>Runs <paramref name="action"/> and logs instead of throwing: the patcher must never break the game.</summary>
         public static void Guard(string where, Action action)
         {
             try
