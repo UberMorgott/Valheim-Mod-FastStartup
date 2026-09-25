@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using FastStartup.Core;
 using HarmonyLib;
@@ -8,7 +9,7 @@ using UnityEngine.SceneManagement;
 namespace FastStartup.Profiling
 {
     /// <summary>
-    /// Valheim startup methods, scene loads and the main-menu-ready trigger. Game types are only touched here,
+    /// Valheim startup and world-load methods, scene loads, the main-menu-ready and first-spawn triggers. Game types are only touched here,
     /// after Chainloader.Initialize, so the preloader never loads assembly_valheim. Every method gets two hook
     /// pairs: an outer one (First prefix / Last finalizer, category <c>game</c>) around all mods' patches, and an
     /// inner one (Last prefix / First postfix, category <c>game.body</c>) around the original body only (Harmony
@@ -21,11 +22,18 @@ namespace FastStartup.Profiling
         private static readonly SpanStack OuterSpans = new SpanStack();
         private static readonly SpanStack BodySpans = new SpanStack();
         private static readonly List<int> BodyDepths = new List<int>();
+        public const string WorldLoadMark = "main scene requested (FejdStartup.LoadMainScene end)";
+        public const string WorldReadyMark = "first player spawn (Game.SpawnPlayer end)";
+
         private static long _sceneRequest;
         private static bool _menuReady;
+        private static bool _worldReady;
 
         /// <summary>Raised once, on the main thread, at the end of the first FejdStartup.Start.</summary>
         public static event Action MenuReady;
+
+        /// <summary>Raised once, on the main thread, at the end of the first Game.SpawnPlayer (player in the world).</summary>
+        public static event Action WorldReady;
 
         // Citations: ValheimDecompiled-1.0.15\assembly_valheim\<File>.cs:<line>.
         internal static MethodInfo[] Targets() => new[]
@@ -43,10 +51,28 @@ namespace FastStartup.Profiling
             AccessTools.DeclaredMethod(typeof(Localization), "LoadCSV"),
         };
 
+        /// <summary>World load after the menu (main scene request -> first player spawn). Not used by PatchOwnerProbe.</summary>
+        private static MethodInfo[] WorldTargets() => new[]
+        {
+            AccessTools.DeclaredMethod(typeof(FejdStartup), "LoadMainScene"),           // FejdStartup.cs:2957
+            AccessTools.DeclaredMethod(typeof(ZNet), "Awake"),                          // ZNet.cs:333
+            AccessTools.DeclaredMethod(typeof(ZNet), "Start"),                          // ZNet.cs:435
+            AccessTools.DeclaredMethod(typeof(ZNet), "LoadWorld"),                      // ZNet.cs:1949
+            AccessTools.DeclaredMethod(typeof(ZoneSystem), "Awake"),                    // ZoneSystem.cs:667
+            AccessTools.DeclaredMethod(typeof(ZoneSystem), "Start"),                    // ZoneSystem.cs:685
+            AccessTools.DeclaredMethod(typeof(ZoneSystem), "GenerateLocationsIfNeeded"), // ZoneSystem.cs:706
+            AccessTools.DeclaredMethod(typeof(Minimap), "Awake"),                       // Minimap.cs:446
+            AccessTools.DeclaredMethod(typeof(Minimap), "Start"),                       // Minimap.cs:513
+            AccessTools.DeclaredMethod(typeof(EnvMan), "Awake"),                        // EnvMan.cs:222
+            AccessTools.DeclaredMethod(typeof(Game), "Awake"),                          // Game.cs:238
+            AccessTools.DeclaredMethod(typeof(Game), "Start"),                          // Game.cs:283
+            AccessTools.DeclaredMethod(typeof(Game), "SpawnPlayer"),                    // Game.cs:484 (first end = world ready)
+        };
+
         public static void Install(Harmony harmony)
         {
             int hooked = 0;
-            foreach (MethodInfo method in Targets())
+            foreach (MethodInfo method in Targets().Concat(WorldTargets()))
             {
                 if (method == null)
                 {
@@ -85,7 +111,7 @@ namespace FastStartup.Profiling
 
         private static void BodyPostfix(MethodBase __originalMethod) => Finish(__originalMethod, "game.body", BodySpans.Pop());
 
-        private static void OuterFinalizer(MethodBase __originalMethod)
+        private static void OuterFinalizer(MethodBase __originalMethod, Exception __exception)
         {
             int last = BodyDepths.Count - 1;
             if (last >= 0)
@@ -93,10 +119,10 @@ namespace FastStartup.Profiling
                 BodySpans.TruncateTo(BodyDepths[last]);
                 BodyDepths.RemoveAt(last);
             }
-            Finish(__originalMethod, "game", OuterSpans.Pop());
+            Finish(__originalMethod, "game", OuterSpans.Pop(), __exception != null);
         }
 
-        private static void Finish(MethodBase original, string cat, long start)
+        private static void Finish(MethodBase original, string cat, long start, bool failed = false)
         {
             if (start == 0)
             {
@@ -104,11 +130,26 @@ namespace FastStartup.Profiling
             }
             long end = StartupTrace.Now();
             StartupTrace.Complete(cat, original.DeclaringType?.Name + "." + original.Name, start, end);
-            if (cat == "game" && !_menuReady && original.DeclaringType == typeof(FejdStartup) && original.Name == "Start")
+            if (cat != "game")
+            {
+                return;
+            }
+            if (!_menuReady && original.DeclaringType == typeof(FejdStartup) && original.Name == "Start")
             {
                 _menuReady = true;
                 StartupTrace.Mark("main menu ready (FejdStartup.Start end)");
                 Log.Guard("MenuReady handlers", () => MenuReady?.Invoke());
+            }
+            else if (original.DeclaringType == typeof(FejdStartup) && original.Name == "LoadMainScene")
+            {
+                StartupTrace.Mark(WorldLoadMark);
+                _sceneRequest = StartupTrace.Now();
+            }
+            else if (!_worldReady && !failed && original.DeclaringType == typeof(Game) && original.Name == "SpawnPlayer")
+            {
+                _worldReady = true;
+                StartupTrace.Mark(WorldReadyMark);
+                Log.Guard("WorldReady handlers", () => WorldReady?.Invoke());
             }
         }
 
@@ -128,7 +169,8 @@ namespace FastStartup.Profiling
             if (_sceneRequest != 0)
             {
                 StartupTrace.Complete("scene", "load " + scene.name, _sceneRequest, StartupTrace.Now(),
-                    "SceneLoader.Start -> sceneLoaded (includes logos, platform init and scene Awake calls)",
+                    "scene request (SceneLoader.Start / FejdStartup.LoadMainScene) -> sceneLoaded (includes the previous scene's " +
+                    "unload, logos, platform init and scene Awake calls)",
                     tid: StartupTrace.LaneScenes);
                 _sceneRequest = 0;
             }

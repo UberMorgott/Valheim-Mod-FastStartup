@@ -12,7 +12,8 @@ namespace FastStartup.Profiling
     /// <summary>
     /// Wires the profiling modules. Phases: <see cref="Begin"/> from the patcher's Initialize (no Unity types
     /// touched), <see cref="InstallRuntimeHooks"/> from Finish (pure managed hooks only: Harmony + Chainloader),
-    /// Unity/game hooks from the Chainloader.Initialize postfix once the engine is up. Output on main-menu ready: BepInEx\FastStartup\trace.json + summary.txt.
+    /// Unity/game hooks from the Chainloader.Initialize postfix once the engine is up. Output on main-menu ready:
+    /// BepInEx\FastStartup\trace.json + summary.txt; on the first player spawn: trace-world.json + summary-world.txt.
     /// </summary>
     internal static class Profiler
     {
@@ -20,7 +21,9 @@ namespace FastStartup.Profiling
 
         private static Harmony _harmony;
         private static long _initialized;
-        private static int _exported;
+        private static int _menuExported;
+        private static int _worldExported;
+        private static volatile bool _menuReached;
 
         private static string OutputDir => Path.Combine(Paths.BepInExRootPath, "FastStartup");
 
@@ -54,20 +57,32 @@ namespace FastStartup.Profiling
             Log.Guard("Bundle profiler install", () => BundleProfiler.Install(_harmony));
             Log.Guard("Game probe install", () => GameLifecycleProbe.Install(_harmony));
             GameLifecycleProbe.MenuReady += OnMenuReady;
+            GameLifecycleProbe.WorldReady += OnWorldReady;
             Application.quitting += OnQuitting;
         }
 
+        /// <summary>Menu profile from a snapshot; recording goes on until the first player spawn.</summary>
         private static void OnMenuReady()
         {
             long now = StartupTrace.Now();
-            List<TraceEvent> events = StartupTrace.StopAndSnapshot();
+            List<TraceEvent> events = StartupTrace.Snapshot();
             double menuReadyMs = StartupTrace.ToMs(now);
-            Log.Info(TraceReport.OneLine(events, menuReadyMs));
-            // File output off the main thread; the trace is already frozen.
-            ThreadPool.QueueUserWorkItem(_ => Export(events, menuReadyMs, "main menu ready"));
+            _menuReached = true;
+            Log.Info(TraceReport.OneLine(events, menuReadyMs, "menu ready"));
+            // File output off the main thread; the snapshot is a copy.
+            ThreadPool.QueueUserWorkItem(_ => Export(events, menuReadyMs, "main menu ready", "menu ready", ""));
         }
 
-        /// <summary>Quit before the menu (crash-free exit mid-startup): write what was recorded, synchronously.</summary>
+        private static void OnWorldReady()
+        {
+            long now = StartupTrace.Now();
+            List<TraceEvent> events = StartupTrace.StopAndSnapshot();
+            double spawnMs = StartupTrace.ToMs(now);
+            Log.Info(TraceReport.OneLine(events, spawnMs, "first spawn"));
+            ThreadPool.QueueUserWorkItem(_ => Export(events, spawnMs, "first player spawn", "first spawn", "-world"));
+        }
+
+        /// <summary>Quit before the first spawn (crash-free exit mid-startup): write what was recorded, synchronously.</summary>
         private static void OnQuitting()
         {
             if (!StartupTrace.Recording)
@@ -75,21 +90,24 @@ namespace FastStartup.Profiling
                 return;
             }
             long now = StartupTrace.Now();
-            Export(StartupTrace.StopAndSnapshot(), StartupTrace.ToMs(now), "quit before main menu (partial trace)");
+            bool menu = _menuReached;
+            Export(StartupTrace.StopAndSnapshot(), StartupTrace.ToMs(now), menu ? "quit before first spawn (partial trace)" : "quit before main menu (partial trace)",
+                "quit", menu ? "-world" : "");
         }
 
-        private static void Export(List<TraceEvent> events, double endMs, string reason)
+        /// <summary>Menu profile: trace.json + summary.txt; world profile (process start -> first spawn): trace-world.json + summary-world.txt.</summary>
+        private static void Export(List<TraceEvent> events, double endMs, string reason, string endLabel, string suffix)
         {
-            if (Interlocked.Exchange(ref _exported, 1) != 0)
+            if (Interlocked.Exchange(ref suffix.Length == 0 ? ref _menuExported : ref _worldExported, 1) != 0)
             {
                 return;
             }
             Log.Guard("Trace export", () =>
             {
                 string header = $"FastStartup startup profile - {DateTime.Now:yyyy-MM-dd HH:mm:ss} - {reason} - {events.Count} events";
-                AtomicFile.WriteAllText(Path.Combine(OutputDir, "trace.json"), TraceReport.ChromeTrace(events));
-                AtomicFile.WriteAllText(Path.Combine(OutputDir, "summary.txt"), TraceReport.Summary(events, endMs, header));
-                Log.Info($"Profile written to {OutputDir} (trace.json for chrome://tracing / ui.perfetto.dev, summary.txt)");
+                AtomicFile.WriteAllText(Path.Combine(OutputDir, "trace" + suffix + ".json"), TraceReport.ChromeTrace(events));
+                AtomicFile.WriteAllText(Path.Combine(OutputDir, "summary" + suffix + ".txt"), TraceReport.Summary(events, endMs, endLabel, header));
+                Log.Info($"Profile written to {OutputDir} (trace{suffix}.json for chrome://tracing / ui.perfetto.dev, summary{suffix}.txt)");
             });
         }
     }

@@ -23,7 +23,7 @@ namespace FastStartup.Profiling
 
     /// <summary>
     /// In-memory monotonic startup trace. Recording is cheap (one lock + one allocation per event) and stops at
-    /// main-menu ready; the export happens once, off the hot path. Nothing is logged per event.
+    /// the first player spawn (a snapshot is exported at main-menu ready); exports happen off the hot path. Nothing is logged per event.
     /// </summary>
     internal static class StartupTrace
     {
@@ -133,6 +133,12 @@ namespace FastStartup.Profiling
         public static List<TraceEvent> StopAndSnapshot()
         {
             Recording = false;
+            return Snapshot();
+        }
+
+        /// <summary>Copy of everything recorded so far; recording goes on.</summary>
+        public static List<TraceEvent> Snapshot()
+        {
             lock (Lock)
             {
                 return new List<TraceEvent>(Events);

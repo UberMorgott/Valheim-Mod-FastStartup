@@ -93,15 +93,26 @@ namespace FastStartup.Profiling
         /// <summary>Grouping key for the time-sink table: Harmony by owner, everything else by name.</summary>
         private static string Key(TraceEvent e) => e.Cat == "harmony" ? (e.Detail ?? "?") : e.Name;
 
-        public static string Summary(List<TraceEvent> events, double menuReadyMs, string header)
+        public static string Summary(List<TraceEvent> events, double endMs, string endLabel, string header)
         {
             Dictionary<TraceEvent, double> self = SelfTimes(events, out double accountedMs);
             var sb = new StringBuilder();
             sb.AppendLine(header);
-            sb.AppendLine(F("menu ready {0:F0} ms since process start{1}; main-thread spans cover {2:F0} ms ({3:F0}%), " +
+            sb.AppendLine(F("{0} {1:F0} ms since process start{2}; main-thread spans cover {3:F0} ms ({4:F0}%), " +
                             "rest = Unity/native work, frames and waits between hooked calls",
-                menuReadyMs, StartupTrace.ProcessStartKnown ? "" : " (process start unknown: since FastStartup.Initialize)",
-                accountedMs, menuReadyMs > 0 ? accountedMs * 100 / menuReadyMs : 0));
+                endLabel, endMs, StartupTrace.ProcessStartKnown ? "" : " (process start unknown: since FastStartup.Initialize)",
+                accountedMs, endMs > 0 ? accountedMs * 100 / endMs : 0));
+            TraceEvent menu = events.FirstOrDefault(e => e.Cat == "game" && e.Name == "FejdStartup.Start");
+            TraceEvent request = events.FirstOrDefault(e => e.Cat == "game" && e.Name == "FejdStartup.LoadMainScene");
+            TraceEvent spawn = events.FirstOrDefault(e => e.Cat == "mark" && e.Name == GameLifecycleProbe.WorldReadyMark);
+            if (request != null && spawn != null)
+            {
+                sb.AppendLine(F("menu ready {0:F0} ms; world load {1:F0} ms (FejdStartup.LoadMainScene start -> first spawn), " +
+                                "time in the menu before it {2:F0} ms (user input, not startup cost)",
+                    menu != null ? StartupTrace.ToMs(menu.End) : -1, StartupTrace.DurMs(request.Start, spawn.Start),
+                    menu != null ? StartupTrace.DurMs(menu.End, request.Start) : -1));
+                sb.AppendLine("  Self-time tables below include the menu wait (idle frames are not spans, so it adds little).");
+            }
             sb.AppendLine();
 
             sb.AppendLine("== Lifecycle marks (ms since process start; GC counts gen0/1/2; managed heap) ==");
@@ -220,14 +231,14 @@ namespace FastStartup.Profiling
             return sb.ToString();
         }
 
-        /// <summary>One log line: menu-ready time plus the three largest self-time sinks.</summary>
-        public static string OneLine(List<TraceEvent> events, double menuReadyMs)
+        /// <summary>One log line: end time (menu ready / first spawn) plus the three largest self-time sinks.</summary>
+        public static string OneLine(List<TraceEvent> events, double endMs, string endLabel)
         {
             Dictionary<TraceEvent, double> self = SelfTimes(events, out double accountedMs);
             IEnumerable<string> top = self.GroupBy(kv => kv.Key.Cat + ":" + Key(kv.Key))
                 .Select(g => new { g.Key, Ms = g.Sum(kv => kv.Value) })
                 .OrderByDescending(g => g.Ms).Take(3).Select(g => F("{0} {1:F0} ms", g.Key, g.Ms));
-            return F("menu ready {0:F1} s, {1:F1} s in hooked spans; top: {2}", menuReadyMs / 1000, accountedMs / 1000,
+            return F("{0} {1:F1} s, {2:F1} s in hooked spans; top: {3}", endLabel, endMs / 1000, accountedMs / 1000,
                 string.Join(", ", top.ToArray()));
         }
 
