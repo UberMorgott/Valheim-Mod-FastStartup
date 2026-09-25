@@ -22,6 +22,7 @@ namespace FastStartup.BundleCache
     /// after the main menu, copied off the main thread and recompressed with
     /// <c>AssetBundle.RecompressAssetBundleAsync(.., BuildCompression.LZ4Runtime, .., ThreadPriority.Low)</c>
     /// (AssetBundleModule line 925, CoreModule BuildCompression), one bundle at a time. Any failure = original load.
+    /// Verified copies shipped in the modpack (<see cref="PackCache"/>) are tried before the local cache.
     /// </summary>
     internal static class BundleCacheModule
     {
@@ -31,6 +32,7 @@ namespace FastStartup.BundleCache
         private static readonly HashSet<string> Queued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static Harmony _harmony;
         private static CacheStore _store;
+        private static PackCache _pack;
         private static volatile bool _active;
         private static SynchronizationContext _main;
         private static HashSet<Guid> _loadedMvids;
@@ -40,6 +42,7 @@ namespace FastStartup.BundleCache
         private static readonly Stopwatch PopulateTime = new Stopwatch();
 
         private static int _hits;
+        private static int _packHits;
         private static long _hitBytes;
         private static int _misses;
         private static int _alreadyFast;
@@ -63,12 +66,14 @@ namespace FastStartup.BundleCache
             }
             // Everything FastStartup writes stays under BepInEx\FastStartup in the game folder (owner rule: no caches
             // in AppData/LocalLow/%TEMP%), so deleting that folder removes it all.
-            _store = new CacheStore(Path.GetFullPath(Path.Combine(Paths.BepInExRootPath, Path.Combine("FastStartup", Path.Combine("cache", "bundles")))),
-                Application.unityVersion);
+            string root = Path.GetFullPath(Path.Combine(Paths.BepInExRootPath, "FastStartup"));
+            _store = new CacheStore(Path.Combine(root, Path.Combine("cache", "bundles")), Application.unityVersion);
+            // Modpack-shipped copies (read-only, same key and version folder): BepInEx\FastStartup\pack\bundles\v1-<Unity>.
+            _pack = PackCache.Open(Path.Combine(root, Path.Combine("pack", Path.Combine("bundles", Path.GetFileName(_store.Dir)))), _store.Dir);
             Hook("LoadFromStreamInternal", nameof(StreamPrefix));
             Hook("LoadFromStreamAsyncInternal", nameof(StreamAsyncPrefix));
             _active = true;
-            Log.Info($"BundleCache: active, cache {_store.Dir}");
+            Log.Info($"BundleCache: active, cache {_store.Dir}" + (_pack == null ? ", no pack cache" : $", pack cache {_pack.Dir} ({_pack.Count} copies)"));
         }
 
         private static void Hook(string target, string prefix)
@@ -141,6 +146,14 @@ namespace FastStartup.BundleCache
                         $"BundleCache: {stream?.GetType().FullName ?? "null"} stream is not an embedded resource, loaded uncached");
                     return null;
                 }
+                string packed = _pack?.Find(source, stream);
+                if (packed != null)
+                {
+                    _store.MarkPackServed(source.FileName);
+                    _packHits++;
+                    _hitBytes += source.Length;
+                    return packed;
+                }
                 string path = _store.PathOf(source);
                 if (File.Exists(path))
                 {
@@ -200,7 +213,7 @@ namespace FastStartup.BundleCache
             {
                 return;
             }
-            Log.Info($"BundleCache: {_hits} hits ({_hitBytes / (1024.0 * 1024.0):F1} MB served from LZ4 copies), {_misses} LZMA misses queued, " +
+            Log.Info($"BundleCache: {_packHits} pack hits + {_hits} local hits ({_hitBytes / (1024.0 * 1024.0):F1} MB served from LZ4 copies), {_misses} LZMA misses queued, " +
                      $"{_alreadyFast} already LZ4/uncompressed, {_passedThrough} not cacheable");
             _main = SynchronizationContext.Current;
             if (_main == null)
@@ -335,7 +348,7 @@ namespace FastStartup.BundleCache
         private static void Store(ResourceSource source, string input, string output, bool success, string result)
         {
             TryDelete(input);
-            if (!success || !BundleHeader.IsCompleteCopy(output))
+            if (!success || !BundleHeader.IsCompleteCopy(output) || !SameNodes(source, output))
             {
                 Log.WarningOnce(LogKey + "store." + source.Label, $"BundleCache: recompress of {source.Label} failed ({result}), it stays uncached");
                 TryDelete(output);
@@ -354,6 +367,17 @@ namespace FastStartup.BundleCache
             _store.Add(source.FileName, source.Label);
             _created++;
             _createdBytes += size;
+        }
+
+        /// <summary>The copy holds the same files (node paths + sizes) as the source bundle; true when the source's
+        /// directory is LZMA-compressed and cannot be read here (none seen so far).</summary>
+        private static bool SameNodes(ResourceSource source, string copy)
+        {
+            using (Stream resource = source.Assembly.GetManifestResourceStream(source.ResourceName))
+            {
+                string nodes = resource == null ? null : BundleHeader.Nodes(resource);
+                return nodes == null || nodes == BundleHeader.Nodes(copy);
+            }
         }
 
         private static void Maintain()

@@ -49,12 +49,14 @@ go into `plugins`.
 
 Config `BepInEx\config\FastStartup.cfg`:
 
-- `[Profiler] Enabled` (default `false`): record process start -> main menu and write the report. Costs about
-  0.5 s of startup; turn it on to measure.
+- `[Profiler] Enabled` (default `false`): record process start -> main menu (and on to the first spawn in a
+  world) and write the report. Costs about 0.5 s of startup; turn it on to measure.
 - `[Profiler] TimeModPatches` (default `false`): also time each mod's prefix/postfix on the profiled game methods
   (see "Mod patches by owner" below).
-- `[BundleCache] Enabled` (default `true`): serve mods' embedded LZMA bundles from LZ4 copies.
-- `[BundleCache] MaxCacheSizeMB` (default `2048`): size cap, least recently used copies are evicted.
+- `[BundleCache] Enabled` (default `true`): serve mods' embedded LZMA bundles from LZ4 copies (the modpack's
+  prebuilt copies first, see "Modpack cache").
+- `[BundleCache] MaxCacheSizeMB` (default `2048`): local cache size cap, least recently used copies not loaded in
+  this session are evicted (the modpack cache is not counted or touched).
 - `[ConfigSaveBatcher] Enabled` (default `true`): one write per `.cfg` instead of one per `Bind`/value change during
   startup.
 - `[LocalizationCache] Enabled` (default `true`): parse each vanilla localization CSV once per language.
@@ -194,10 +196,48 @@ a 40.9 s startup here. The cache stores an LZ4 copy of each one and loads that w
 - Storage: `BepInEx\FastStartup\cache\bundles\v1-<Unity version>\<mvid>-<name hash>.bundle`. The file name is
   the key; copies are written to `<file>.<pid>.<kind>.tmp` and renamed into place, so a crash never leaves a
   broken copy. `index.tsv` only holds last-use times for LRU; losing it never deletes a valid copy.
+- A new local copy is kept only when its UnityFS directory (node paths + sizes) equals the source bundle's.
 - Maintenance after the main menu (worker thread): deletes temps of dead processes, caches of other Unity
-  versions, copies whose DLL (MVID) is no longer loaded (mod updated or removed), then the least recently used
-  copies above `MaxCacheSizeMB`. Copies used in the current session are kept.
+  versions, copies whose DLL (MVID) is no longer loaded (mod updated or removed), local duplicates of keys the
+  modpack cache served this session, then the least recently used copies above `MaxCacheSizeMB`. Copies loaded in
+  the current session are never deleted; the modpack cache is never touched.
 - Any error in the cache path falls back to the original load and is logged once.
+
+### Modpack cache (prebuilt copies)
+
+The pack can ship the copies so the first launch after an install or mod update skips the LZMA path.
+
+- Location in the game folder (read-only for FastStartup; the launcher may restore it at will):
+  `BepInEx\FastStartup\pack\bundles\v1-<Unity version>\manifest.tsv` + `<mvid>-<name hash>.bundle`. In the pack:
+  `client\BepInEx\FastStartup\pack\bundles\v1-6000.0.75f1\`. A Unity update changes the folder name, so an old pack
+  cache is simply not found.
+- Lookup order: pack copy, local copy, original load (+ local rebuild).
+- A pack copy is served only when all hold for its key: the `manifest.tsv` row names the same resource and source
+  length; the copy has the manifest length, is a complete LZ4 UnityFS file and has the same directory (node paths +
+  sizes) as the source bundle; the SHA-256 of the copy and of the source resource equal the manifest. The hashes
+  are computed once per file version (copies on the thread pool from `Chainloader.Initialize`, before plugins load
+  bundles; the source at its first load) and stamped in `cache\bundles\v1-...\pack-verified.tsv` (copy length +
+  last write time, DLL length + last write time, both hashes); later launches compare lengths and times only. A
+  rejected copy is logged with the reason and the bundle takes the local path, so a stale or damaged pack copy is
+  never loaded and is rebuilt locally.
+- Limit: an in-place edit that keeps both the length and the last write time of a copy or DLL is not rehashed.
+- Build (on the PC that made the pack, after a launch reached the menu and the background recompress logged
+  `cached N bundles`):
+
+  ```powershell
+  pwsh -File tools\build-pack-cache.ps1 -PluginDirs Z:\modpacks\Valheim\universal\BepInEx\plugins,Z:\modpacks\Valheim\client\BepInEx\plugins -OutDir <dir>
+  # then copy <dir>\* to Z:\modpacks\Valheim\client\BepInEx\FastStartup\pack\bundles\
+  ```
+
+  It takes the local copies whose DLL (by MVID) is in the pack, writes them plus a sorted `manifest.tsv` (file,
+  resource, source bytes, source SHA-256, copy bytes, copy SHA-256, owner DLL; no times or paths), so the same
+  inputs give byte-identical output, and lists pack bundles that have no local copy. Like the local cache it
+  trusts the MVID: a local copy is taken as made from the DLL with that MVID (FastStartup checked its directory
+  against the source when it stored it). Rebuild it whenever a pack
+  DLL with bundles changes: rows of DLLs no longer in the pack are left out, and a row whose DLL changed is
+  rejected at load time anyway.
+- Timing A/B (menu ready; own `valheim.exe` only, parks and restores the cache folders):
+  `pwsh -File tools\startup-ab.ps1 -Setup Pack -PackDir <dir> -Repeat 3`, then `-Setup Local`, then `-Setup None`.
 
 Measured (menu ready, profiler on; SA = StartupAccelerator, LC = LocalizationCache):
 
@@ -233,6 +273,11 @@ overwrites these files:
   per-plugin init time, Harmony time per owner, AssetBundle loads, game methods split into vanilla body and
   mod patches.
 
+Recording goes on to the first player spawn (end of the first `Game.SpawnPlayer`); then it stops and writes
+`trace-world.json` + `summary-world.txt` (process start -> spawn, same sections, plus a line with menu-ready
+time, world load = `FejdStartup.LoadMainScene` start -> spawn, and the time spent in the menu before it). Quitting
+before the spawn writes what was recorded as a partial world trace.
+
 What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per event):
 
 - Preloader and chainloader phases: `Chainloader.Initialize`, `Chainloader.Start`.
@@ -243,6 +288,10 @@ What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per
 - AssetBundle loads from file, memory and stream, sync and async, with path and size.
 - Game: `FejdStartup.Awake/Start/SetupGui/SetupObjectDB`, `ObjectDB.Awake/CopyOtherDB/UpdateRegisters`,
   `ZNetScene.Awake`, scene loads.
+- World load: `FejdStartup.LoadMainScene`, `ZNet.Awake/Start/LoadWorld`, `ZoneSystem.Awake/Start/
+  GenerateLocationsIfNeeded`, `Minimap.Awake/Start`, `EnvMan.Awake`, `Game.Awake/Start/SpawnPlayer`, the main scene
+  load (request -> `sceneLoaded`, includes the menu scene's unload). Coroutine work after these calls (location
+  placement, the scene unload itself) shows up as gaps.
 - Jotunn: item/piece registration into ObjectDB, when Jotunn is installed.
 
 Limits: plugin work in Unity `Start()`/coroutines after `Awake` is not attributed to the plugin. Native Unity

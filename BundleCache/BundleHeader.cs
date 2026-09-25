@@ -53,17 +53,80 @@ namespace FastStartup.BundleCache
             }
         }
 
-        private static BundleCompression Classify(Stream stream, out long size)
+        /// <summary>
+        /// The archive's directory: one "path size" line per node (the serialized files and resources inside the
+        /// bundle), or null when the block table is LZMA or unreadable. Recompression rewrites blocks but keeps the
+        /// nodes, so equal lists mean the copy holds the same files as the source. Restores the stream position.
+        /// </summary>
+        public static string Nodes(Stream stream)
+        {
+            Classify(stream, out _, out byte[] table);
+            return table == null ? null : NodeList(table);
+        }
+
+        public static string Nodes(string path)
+        {
+            try
+            {
+                using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    return Nodes(file);
+                }
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Node table after the block table: i32 count, per node i64 offset, i64 size, u32 flags, C string path.</summary>
+        private static string NodeList(byte[] table)
+        {
+            try
+            {
+                int at = 20 + ReadInt32(table, 16) * 10;
+                int count = ReadInt32(table, at);
+                at += 4;
+                if (count < 0 || count > table.Length / 21)
+                {
+                    return null;
+                }
+                var sb = new StringBuilder();
+                for (int i = 0; i < count; i++)
+                {
+                    long size = ((long)(uint)ReadInt32(table, at + 8) << 32) | (uint)ReadInt32(table, at + 12);
+                    at += 20;
+                    int end = Array.IndexOf(table, (byte)0, at);
+                    if (end < 0)
+                    {
+                        return null;
+                    }
+                    sb.Append(Encoding.UTF8.GetString(table, at, end - at)).Append(' ').Append(size).Append('\n');
+                    at = end + 1;
+                }
+                return sb.ToString();
+            }
+            catch (IndexOutOfRangeException)
+            {
+                return null;
+            }
+        }
+
+        private static BundleCompression Classify(Stream stream, out long size) => Classify(stream, out size, out _);
+
+        private static BundleCompression Classify(Stream stream, out long size, out byte[] table)
         {
             size = -1;
+            table = null;
             long origin = stream.Position;
             try
             {
-                return Classify(stream, origin, out size);
+                return Classify(stream, origin, out size, out table);
             }
             catch (Exception e) when (e is IOException || e is InvalidDataException || e is IndexOutOfRangeException ||
                                       e is ArgumentException || e is EndOfStreamException)
             {
+                table = null;
                 return BundleCompression.Unknown;
             }
             finally
@@ -72,9 +135,10 @@ namespace FastStartup.BundleCache
             }
         }
 
-        private static BundleCompression Classify(Stream stream, long origin, out long size)
+        private static BundleCompression Classify(Stream stream, long origin, out long size, out byte[] table)
         {
             size = -1;
+            table = null;
             var reader = new BigEndianReader(stream);
             if (reader.CString() != "UnityFS")
             {
@@ -103,7 +167,6 @@ namespace FastStartup.BundleCache
             }
             byte[] packed = reader.Bytes((int)compressedSize);
 
-            byte[] table;
             switch (flags & CompressionMask)
             {
                 case 0:

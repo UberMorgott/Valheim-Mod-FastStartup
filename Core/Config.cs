@@ -32,7 +32,7 @@ namespace FastStartup.Core
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
             ProfilerEnabled = file.Bind("Profiler", "Enabled", false,
                 "Record a startup trace (process start -> main menu) and write BepInEx\\FastStartup\\trace.json (Chrome trace) " +
-                "and summary.txt. Costs about 0.5 s of startup (its Harmony hooks), so it is off for normal play; turn it on to " +
+                "and summary.txt; recording goes on to the first spawn in a world (trace-world.json, summary-world.txt). Costs about 0.5 s of startup (its Harmony hooks), so it is off for normal play; turn it on to " +
                 "measure. Read once at launch.");
             ProfilerTimeModPatches = file.Bind("Profiler", "TimeModPatches", false,
                 "Also time every mod prefix/postfix/finalizer on the profiled game methods (FejdStartup.Awake etc.) per owner. " +
@@ -42,10 +42,12 @@ namespace FastStartup.Core
             BundleCacheEnabled = file.Bind("BundleCache", "Enabled", true,
                 "Serve LZMA asset bundles that mods embed in their DLLs from an LZ4 copy cached under " +
                 "BepInEx\\FastStartup\\cache\\bundles (game folder). Copies are made in the background after the main menu; " +
-                "the first launch loads the originals. Read once at launch.");
+                "the first launch loads the originals. Verified prebuilt copies shipped by the modpack in " +
+                "BepInEx\\FastStartup\\pack\\bundles are used first. Read once at launch.");
             BundleCacheMaxSizeMB = file.Bind("BundleCache", "MaxCacheSizeMB", 2048,
-                new ConfigDescription("Cache size cap. Least recently used copies beyond it are deleted after the main menu " +
-                                      "(copies used in the current session are kept).", new AcceptableValueRange<int>(64, 65536)));
+                new ConfigDescription("Local cache size cap. Least recently used copies beyond it are deleted after the main menu " +
+                                      "(copies loaded in the current session are kept; the modpack's copies are never touched).",
+                    new AcceptableValueRange<int>(64, 65536)));
             ConfigSaveBatcherEnabled = file.Bind("ConfigSaveBatcher", "Enabled", true,
                 "While the chainloader loads plugins, write each changed .cfg once at the end instead of on every Bind/value " +
                 "change (BepInEx rewrites the whole file each time). Also flushed before a pending file is reloaded and on " +
