@@ -1,9 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using FastStartup.Core;
 using HarmonyLib;
+using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace FastStartup.Profiling
@@ -25,7 +27,22 @@ namespace FastStartup.Profiling
         public const string WorldLoadMark = "main scene requested (FejdStartup.LoadMainScene end)";
         public const string WorldReadyMark = "first player spawn (Game.SpawnPlayer end)";
 
+        public const string MainSceneLoadedMark = "main scene loaded (every scene Awake done)";
+        public const string FirstFrameMark = "first rendered frame after the main scene load (loading screen visible)";
+        public const string ZoneStartMark = "ZoneSystem.Start end";
+
         private static long _sceneRequest;
+
+        // World-load wall clock (main thread only): click -> LoadMainScene -> main scene Awake block -> first frame.
+        private static long _click;
+        private static long _loadMainStart;
+        private static long _loadMainEnd;
+        private static long _menuFrame;
+        private static long _mainLoaded;
+        private static long _firstFrame;
+        private static long _zoneStart;
+        private static bool _awaitMainScene;
+        private static bool _worldLoadEmitted;
         private static bool _menuReady;
         private static bool _worldReady;
 
@@ -51,10 +68,14 @@ namespace FastStartup.Profiling
             AccessTools.DeclaredMethod(typeof(Localization), "LoadCSV"),
         };
 
-        /// <summary>World load after the menu (main scene request -> first player spawn). Not used by PatchOwnerProbe.</summary>
-        private static MethodInfo[] WorldTargets() => new[]
+        /// <summary>World load after the menu (world start click -> first player spawn).</summary>
+        internal static MethodInfo[] WorldTargets() => new[]
         {
-            AccessTools.DeclaredMethod(typeof(FejdStartup), "LoadMainScene"),           // FejdStartup.cs:2957
+            // OnWorldStart / DLCMan / CollectResources cited from ValheimDecompiled-1.0.16.
+            AccessTools.DeclaredMethod(typeof(FejdStartup), "OnWorldStart"),            // FejdStartup.cs:1635 (start = click)
+            AccessTools.DeclaredMethod(typeof(FejdStartup), "LoadMainScene"),           // FejdStartup.cs:2957 (sync FastLoadScene)
+            AccessTools.DeclaredMethod(typeof(DLCMan), "Awake"),                        // DLCMan.cs:25
+            AccessTools.DeclaredMethod(typeof(Game), "CollectResources"),               // Game.cs:320 (UnloadUnusedAssets, from ZNet.LoadWorld)
             AccessTools.DeclaredMethod(typeof(ZNet), "Awake"),                          // ZNet.cs:333
             AccessTools.DeclaredMethod(typeof(ZNet), "Start"),                          // ZNet.cs:435
             AccessTools.DeclaredMethod(typeof(ZNet), "LoadWorld"),                      // ZNet.cs:1949
@@ -140,10 +161,25 @@ namespace FastStartup.Profiling
                 StartupTrace.Mark("main menu ready (FejdStartup.Start end)");
                 Log.Guard("MenuReady handlers", () => MenuReady?.Invoke());
             }
+            else if (original.DeclaringType == typeof(FejdStartup) && original.Name == "OnWorldStart")
+            {
+                // OnWorldStart may return early (cloud warning, popups): the last one before LoadMainScene wins.
+                _click = start;
+            }
             else if (original.DeclaringType == typeof(FejdStartup) && original.Name == "LoadMainScene")
             {
                 StartupTrace.Mark(WorldLoadMark);
                 _sceneRequest = StartupTrace.Now();
+                _loadMainStart = start;
+                _loadMainEnd = end;
+                _awaitMainScene = true;
+                StartEndOfFrame(FejdStartup.instance, MenuFrameRendered);
+            }
+            else if (_zoneStart == 0 && _loadMainEnd != 0 && original.DeclaringType == typeof(ZoneSystem) && original.Name == "Start")
+            {
+                _zoneStart = end;
+                StartupTrace.Mark(ZoneStartMark);
+                EmitWorldLoadSpans();
             }
             else if (!_worldReady && !failed && original.DeclaringType == typeof(Game) && original.Name == "SpawnPlayer")
             {
@@ -166,6 +202,14 @@ namespace FastStartup.Profiling
                 return;
             }
             StartupTrace.Mark("scene loaded: " + scene.name, mode.ToString());
+            if (_awaitMainScene)
+            {
+                // Sync LoadScene: every Awake of the new scene ran before sceneLoaded; Start/Update/render follow.
+                _awaitMainScene = false;
+                _mainLoaded = StartupTrace.Now();
+                StartupTrace.Mark(MainSceneLoadedMark, scene.name);
+                StartEndOfFrame((MonoBehaviour)Game.instance ?? ZNet.instance, FirstFrameRendered);
+            }
             if (_sceneRequest != 0)
             {
                 StartupTrace.Complete("scene", "load " + scene.name, _sceneRequest, StartupTrace.Now(),
@@ -173,6 +217,70 @@ namespace FastStartup.Profiling
                     "unload, logos, platform init and scene Awake calls)",
                     tid: StartupTrace.LaneScenes);
                 _sceneRequest = 0;
+            }
+        }
+
+        /// <summary>Runs <paramref name="done"/> after the current frame is rendered (all cameras and UI).</summary>
+        private static void StartEndOfFrame(MonoBehaviour host, Action done)
+        {
+            if (host == null || !host.isActiveAndEnabled)
+            {
+                Log.Warning("Game probe: no active MonoBehaviour to wait for the rendered frame on, world-load frame mark skipped");
+                return;
+            }
+            host.StartCoroutine(EndOfFrame(done));
+        }
+
+        private static IEnumerator EndOfFrame(Action done)
+        {
+            yield return new WaitForEndOfFrame();
+            Log.Guard("World-load frame mark", done);
+        }
+
+        private static void MenuFrameRendered()
+        {
+            if (_mainLoaded == 0)
+            {
+                _menuFrame = StartupTrace.Now();
+                StartupTrace.Mark("menu frame rendered after LoadMainScene (menu loading panel)");
+            }
+        }
+
+        private static void FirstFrameRendered()
+        {
+            _firstFrame = StartupTrace.Now();
+            StartupTrace.Mark(FirstFrameMark);
+            EmitWorldLoadSpans();
+        }
+
+        /// <summary>Wall-clock world-load spans on their own lane (category <c>worldload</c>), once both the first
+        /// rendered frame and ZoneSystem.Start are known.</summary>
+        private static void EmitWorldLoadSpans()
+        {
+            if (_worldLoadEmitted || _firstFrame == 0 || _zoneStart == 0)
+            {
+                return;
+            }
+            _worldLoadEmitted = true;
+            long click = _click != 0 && _click <= _loadMainStart ? _click : _loadMainStart;
+            Span("1 click (OnWorldStart start) -> LoadMainScene end", click, _loadMainEnd,
+                "menu side: OnWorldStart, backend selection, LoadMainScene");
+            if (_menuFrame != 0)
+            {
+                Span("2a LoadMainScene end -> menu frame rendered", _loadMainEnd, _menuFrame, "the menu's loading panel can be seen");
+            }
+            Span("2 LoadMainScene end -> main scene loaded (FREEZE: old scene unload + every main-scene Awake)", _loadMainEnd, _mainLoaded,
+                "sync SceneManager.LoadScene; nothing is rendered during it");
+            Span("3 main scene loaded -> first rendered frame (Start calls + first Update)", _mainLoaded, _firstFrame, null);
+            Span("4 click -> first rendered frame (loading screen visible)", click, _firstFrame, null);
+            Span("5 click -> ZoneSystem.Start end", click, _zoneStart, null);
+        }
+
+        private static void Span(string name, long start, long end, string detail)
+        {
+            if (start != 0 && end >= start)
+            {
+                StartupTrace.Complete("worldload", name, start, end, detail, tid: StartupTrace.LaneWorldLoad);
             }
         }
 

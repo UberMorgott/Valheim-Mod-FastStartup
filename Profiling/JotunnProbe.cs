@@ -7,16 +7,47 @@ using HarmonyLib;
 namespace FastStartup.Profiling
 {
     /// <summary>
-    /// Optional Jotunn phases: item/piece registration into ObjectDB (the menu ObjectDB is filled through
-    /// <c>ObjectDB.CopyOtherDB</c>). Installed after Chainloader.Start, when Jotunn's managers are initialized:
-    /// patching them earlier forces their static constructors before Jotunn is ready (observed:
+    /// Optional Jotunn phases: prefab/item/piece/creature registration in the menu and on world load, their event
+    /// invocations and mock reference fixing. Installed after Chainloader.Start, when Jotunn's managers are
+    /// initialized: patching them earlier forces their static constructors before Jotunn is ready (observed:
     /// TypeInitializationException in <c>AssetManager</c>, which breaks Jotunn for the session). Members verified in
-    /// the installed Jotunn 2.30.1 (ilspycmd): <c>ItemManager.RegisterCustomDataFejd(ObjectDB, ObjectDB)</c>,
-    /// <c>ItemManager.RegisterCustomData(ObjectDB)</c>, <c>PieceManager.RegisterCustomData(ObjectDB)</c>.
+    /// the installed Jotunn 2.30.2 (ilspycmd); a missing one (other version) is skipped with a warning.
+    /// <c>MockManager.FixReferences(object, int)</c> recurses through every member of the fixed object, so only its
+    /// outermost call is recorded.
     /// </summary>
     internal static class JotunnProbe
     {
         private static readonly SpanStack Spans = new SpanStack();
+        private static readonly SpanStack OuterOnlySpans = new SpanStack();
+        private static int _outerOnlyDepth;
+
+        // (type, method, static, outermost call only). Instance methods: ItemManager/PieceManager/PrefabManager also
+        // declare static Harmony forwarders of the same names in their nested Patches classes (different type).
+        private static readonly (string Type, string Method, bool Static, bool OuterOnly)[] Methods =
+        {
+            ("Jotunn.Managers.PrefabManager", "InvokeOnVanillaObjectsAvailable", false, false), // ObjectDB.CopyOtherDB prefix
+            ("Jotunn.Managers.PrefabManager", "RegisterAllToZNetScene", false, false),          // ZNetScene.Awake postfix
+            ("Jotunn.Managers.PrefabManager", "InvokeOnPrefabsRegistered", false, false),       // ZNetScene.Awake postfix
+            ("Jotunn.Managers.ItemManager", "RegisterCustomDataFejd", false, false),            // ObjectDB.CopyOtherDB prefix
+            ("Jotunn.Managers.ItemManager", "InvokeOnItemsRegisteredFejd", false, false),       // ObjectDB.CopyOtherDB postfix
+            ("Jotunn.Managers.ItemManager", "RegisterCustomData", false, false),                // ObjectDB.Awake prefix
+            ("Jotunn.Managers.ItemManager", "InvokeOnVanillaItemsAvailable", false, false),
+            ("Jotunn.Managers.ItemManager", "InvokeOnKitbashItemsAvailable", false, false),
+            ("Jotunn.Managers.ItemManager", "RegisterCustomItems", false, false),
+            ("Jotunn.Managers.ItemManager", "RegisterCustomRecipes", false, false),
+            ("Jotunn.Managers.ItemManager", "RegisterCustomStatusEffects", false, false),
+            ("Jotunn.Managers.ItemManager", "RegisterCustomItemConversions", false, false),
+            ("Jotunn.Managers.ItemManager", "InvokeOnItemsRegistered", false, false),           // ObjectDB.Awake postfix
+            ("Jotunn.Managers.PieceManager", "RegisterCustomData", false, false),               // ObjectDB.Awake postfix
+            ("Jotunn.Managers.PieceManager", "LoadPieceTables", false, false),
+            ("Jotunn.Managers.PieceManager", "RegisterInPieceTables", false, false),
+            ("Jotunn.Managers.PieceManager", "InvokeOnPiecesRegistered", false, false),         // ObjectDB.Awake postfix
+            ("Jotunn.Managers.CreatureManager", "InvokeOnVanillaCreaturesAvailable", false, false),
+            ("Jotunn.Managers.CreatureManager", "FixReferences", false, false),                 // ZNetScene.Awake prefix
+            ("Jotunn.Managers.CreatureManager", "InvokeOnCreaturesRegistered", false, false),
+            ("Jotunn.Managers.MockManager", "FixReferences", true, true),                       // recursive
+            ("Jotunn.Managers.MockManager", "FixQueuedMaterials", true, false),                 // ZoneSystem.Start postfix
+        };
 
         public static void Install(Harmony harmony)
         {
@@ -25,39 +56,60 @@ namespace FastStartup.Profiling
             {
                 return;
             }
-            int hooked = 0;
-            hooked += Hook(harmony, jotunn, "Jotunn.Managers.ItemManager", "RegisterCustomDataFejd");
-            hooked += Hook(harmony, jotunn, "Jotunn.Managers.ItemManager", "RegisterCustomData");
-            hooked += Hook(harmony, jotunn, "Jotunn.Managers.PieceManager", "RegisterCustomData");
-            Log.Info($"Jotunn probe: {hooked} Jotunn methods hooked");
+            int hooked = Methods.Sum(m => Hook(harmony, jotunn, m.Type, m.Method, m.Static, m.OuterOnly));
+            Log.Info($"Jotunn probe: {hooked}/{Methods.Length} Jotunn methods hooked");
         }
 
-        private static int Hook(Harmony harmony, Assembly assembly, string type, string method)
+        private static int Hook(Harmony harmony, Assembly assembly, string type, string method, bool isStatic, bool outerOnly)
         {
-            // Instance method only: ItemManager/PieceManager also declare static Harmony forwarders of the same name.
-            MethodInfo target = assembly.GetType(type)?
-                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
-                .FirstOrDefault(m => m.Name == method);
-            if (target == null)
+            BindingFlags flags = (isStatic ? BindingFlags.Static : BindingFlags.Instance) |
+                                 BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            MethodInfo[] found = assembly.GetType(type)?.GetMethods(flags).Where(m => m.Name == method && !m.IsGenericMethodDefinition).ToArray();
+            if (found == null || found.Length != 1)
             {
-                Log.Warning($"Jotunn probe: {type}.{method} not found, skipped");
+                Log.Warning($"Jotunn probe: {type}.{method} not found or ambiguous ({found?.Length ?? 0} matches), skipped");
                 return 0;
             }
-            harmony.Patch(target,
-                prefix: new HarmonyMethod(AccessTools.Method(typeof(JotunnProbe), nameof(Prefix)), Priority.First),
-                finalizer: new HarmonyMethod(AccessTools.Method(typeof(JotunnProbe), nameof(Finalizer)), Priority.Last));
-            return 1;
+            try
+            {
+                harmony.Patch(found[0],
+                    prefix: new HarmonyMethod(AccessTools.Method(typeof(JotunnProbe), outerOnly ? nameof(OuterPrefix) : nameof(Prefix)), Priority.First),
+                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(JotunnProbe), outerOnly ? nameof(OuterFinalizer) : nameof(Finalizer)), Priority.Last));
+                return 1;
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Jotunn probe: cannot hook {type}.{method}: {e.Message}");
+                return 0;
+            }
         }
 
         private static void Prefix() => Spans.Push();
 
-        private static void Finalizer(MethodBase __originalMethod)
+        private static void Finalizer(MethodBase __originalMethod) => Record(__originalMethod, Spans.Pop());
+
+        // Main thread only (Jotunn registration runs from Unity callbacks).
+        private static void OuterPrefix()
         {
-            long start = Spans.Pop();
+            if (_outerOnlyDepth++ == 0)
+            {
+                OuterOnlySpans.Push();
+            }
+        }
+
+        private static void OuterFinalizer(MethodBase __originalMethod)
+        {
+            if (_outerOnlyDepth > 0 && --_outerOnlyDepth == 0)
+            {
+                Record(__originalMethod, OuterOnlySpans.Pop());
+            }
+        }
+
+        private static void Record(MethodBase original, long start)
+        {
             if (start != 0)
             {
-                StartupTrace.Complete("jotunn", __originalMethod.DeclaringType?.Name + "." + __originalMethod.Name,
-                    start, StartupTrace.Now());
+                StartupTrace.Complete("jotunn", original.DeclaringType?.Name + "." + original.Name, start, StartupTrace.Now());
             }
         }
     }

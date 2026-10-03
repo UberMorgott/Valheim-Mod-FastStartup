@@ -49,8 +49,31 @@ namespace FastStartup.Profiling
                 File.Delete(pendingPath);
             }
 
+            _harmony = harmony;
+            _pendingPath = pendingPath;
+            _skip = skip;
+            int wrapped = Scan();
+            Log.Info($"Patch owner probe: {wrapped} mod patch methods on game startup/world-load methods and Jotunn event handlers timed, {skip.Count} skipped");
+            // Patches and Jotunn subscriptions added after Chainloader.Start (plugin Start, menu code) are picked up
+            // at the main menu, before any world load.
+            GameLifecycleProbe.MenuReady += () =>
+            {
+                int late = Scan();
+                Log.Info($"Patch owner probe: {late} more mod patch methods / Jotunn handlers timed at the main menu");
+            };
+        }
+
+        private static Harmony _harmony;
+        private static string _pendingPath;
+        private static HashSet<string> _skip;
+
+        private static int Scan()
+        {
+            Harmony harmony = _harmony;
+            string pendingPath = _pendingPath;
+            HashSet<string> skip = _skip;
             int wrapped = 0;
-            foreach (MethodInfo target in GameLifecycleProbe.Targets().Where(m => m != null))
+            foreach (MethodInfo target in GameLifecycleProbe.Targets().Concat(GameLifecycleProbe.WorldTargets()).Where(m => m != null))
             {
                 Patches info = Harmony.GetPatchInfo(target);
                 if (info == null)
@@ -74,7 +97,7 @@ namespace FastStartup.Profiling
                 }
             }
             File.Delete(pendingPath);
-            Log.Info($"Patch owner probe: {wrapped} mod patch methods on game startup methods timed, {skip.Count} skipped");
+            return wrapped;
         }
 
         private static bool Wrap(Harmony harmony, MethodInfo method, string owner, string target, string pendingPath, HashSet<string> skip)
@@ -100,9 +123,10 @@ namespace FastStartup.Profiling
             }
         }
 
-        /// <summary>Handlers subscribed (during plugin Awake) to the Jotunn events raised from Jotunn's
-        /// <c>ObjectDB.CopyOtherDB</c> patches (Jotunn 2.30.1: PrefabManager.OnVanillaPrefabsAvailable,
-        /// ItemManager.OnItemsRegisteredFejd, CreatureManager.OnVanillaCreaturesAvailable; static event fields).</summary>
+        /// <summary>Handlers subscribed to the Jotunn events raised from Jotunn's patches on the menu and world-load
+        /// methods (static <c>event Action</c> backing fields, verified in the installed Jotunn 2.30.2 with ilspycmd:
+        /// PrefabManager/ItemManager/PieceManager/CreatureManager/ZoneManager/DungeonManager/GUIManager/
+        /// LocalizationManager/MinimapManager/AssetManager). A missing field (other Jotunn version) is skipped.</summary>
         private static IEnumerable<(MethodInfo, string)> JotunnEventSubscribers()
         {
             Assembly jotunn = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Jotunn");
@@ -113,8 +137,28 @@ namespace FastStartup.Profiling
             foreach ((string type, string field) in new[]
                      {
                          ("Jotunn.Managers.PrefabManager", "OnVanillaPrefabsAvailable"),
+                         ("Jotunn.Managers.PrefabManager", "OnPrefabsRegistered"),
+                         ("Jotunn.Managers.ItemManager", "OnVanillaItemsAvailable"),
+                         ("Jotunn.Managers.ItemManager", "OnKitbashItemsAvailable"),
                          ("Jotunn.Managers.ItemManager", "OnItemsRegisteredFejd"),
+                         ("Jotunn.Managers.ItemManager", "OnItemsRegistered"),
+                         ("Jotunn.Managers.PieceManager", "OnPiecesRegistered"),
                          ("Jotunn.Managers.CreatureManager", "OnVanillaCreaturesAvailable"),
+                         ("Jotunn.Managers.CreatureManager", "OnCreaturesRegistered"),
+                         ("Jotunn.Managers.ZoneManager", "OnVanillaLocationsAvailable"),
+                         ("Jotunn.Managers.ZoneManager", "OnLocationsRegistered"),
+                         ("Jotunn.Managers.ZoneManager", "OnVanillaClutterAvailable"),
+                         ("Jotunn.Managers.ZoneManager", "OnClutterRegistered"),
+                         ("Jotunn.Managers.ZoneManager", "OnVanillaVegetationAvailable"),
+                         ("Jotunn.Managers.ZoneManager", "OnVegetationRegistered"),
+                         ("Jotunn.Managers.DungeonManager", "OnVanillaRoomsAvailable"),
+                         ("Jotunn.Managers.DungeonManager", "OnRoomsRegistered"),
+                         ("Jotunn.Managers.GUIManager", "OnCustomGUIAvailable"),
+                         ("Jotunn.Managers.GUIManager", "OnPixelFixCreated"),
+                         ("Jotunn.Managers.LocalizationManager", "OnLocalizationAdded"),
+                         ("Jotunn.Managers.MinimapManager", "OnVanillaMapAvailable"),
+                         ("Jotunn.Managers.MinimapManager", "OnVanillaMapDataLoaded"),
+                         ("Jotunn.Managers.AssetManager", "OnSoftReferenceableAssetsReady"),
                      })
             {
                 FieldInfo info = jotunn.GetType(type)?.GetField(field, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);

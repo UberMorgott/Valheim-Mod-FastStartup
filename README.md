@@ -258,10 +258,13 @@ launch, which happens while the `start` scene loads.
 methods and reports them per owner in `summary.txt`. Hooking forces Mono to compile those methods early; for some
 methods (the ItemManager/PieceManager helpers in Warfare, Armory, Wizardry) that native compile crashes the game.
 The method being hooked is written to `BepInEx\FastStartup\patch-probe.pending` first, and after a crash the next
-launch moves it to `patch-probe.skip` and never hooks it again (5 launches to settle here). The handlers other mods
-subscribe to Jotunn's events raised from `ObjectDB.CopyOtherDB` (`PrefabManager.OnVanillaPrefabsAvailable`,
-`ItemManager.OnItemsRegisteredFejd`, `CreatureManager.OnVanillaCreaturesAvailable`) are timed the same way, owner
-`Jotunn event handler [<mod>]`.
+launch moves it to `patch-probe.skip` and never hooks it again (5 launches to settle here). This covers the
+world-load methods too (`ZNet`, `ZoneSystem`, `Game`, `Minimap`, `ObjectDB`, `ZNetScene`, `DLCMan` ...). The handlers
+other mods subscribe to Jotunn's events (`PrefabManager.OnVanillaPrefabsAvailable/OnPrefabsRegistered`,
+`ItemManager.OnItemsRegistered(Fejd)`, `PieceManager.OnPiecesRegistered`, the `CreatureManager`, `ZoneManager`,
+`DungeonManager`, `GUIManager`, `LocalizationManager`, `MinimapManager` events ...) are timed the same way, owner
+`Jotunn event handler [<mod>]`. Patches and subscriptions added after `Chainloader.Start` are picked up again at
+the main menu, before the world load.
 
 ## Profiler output
 
@@ -276,7 +279,10 @@ overwrites these files:
 Recording goes on to the first player spawn (end of the first `Game.SpawnPlayer`); then it stops and writes
 `trace-world.json` + `summary-world.txt` (process start -> spawn, same sections, plus a line with menu-ready
 time, world load = `FejdStartup.LoadMainScene` start -> spawn, and the time spent in the menu before it). Quitting
-before the spawn writes what was recorded as a partial world trace.
+before the spawn writes what was recorded as a partial world trace. `summary-world.txt` starts with the world-load
+wall clock (click = `FejdStartup.OnWorldStart` -> `LoadMainScene` end -> main scene loaded, i.e. the freeze in which
+every main-scene `Awake` runs -> first rendered frame, loading screen visible -> `ZoneSystem.Start` end) and the top
+time sinks inside that window by self time, each mod patch / Jotunn handler named by owner.
 
 What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per event):
 
@@ -288,11 +294,13 @@ What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per
 - AssetBundle loads from file, memory and stream, sync and async, with path and size.
 - Game: `FejdStartup.Awake/Start/SetupGui/SetupObjectDB`, `ObjectDB.Awake/CopyOtherDB/UpdateRegisters`,
   `ZNetScene.Awake`, scene loads.
-- World load: `FejdStartup.LoadMainScene`, `ZNet.Awake/Start/LoadWorld`, `ZoneSystem.Awake/Start/
-  GenerateLocationsIfNeeded`, `Minimap.Awake/Start`, `EnvMan.Awake`, `Game.Awake/Start/SpawnPlayer`, the main scene
+- World load: `FejdStartup.OnWorldStart/LoadMainScene`, `ZNet.Awake/Start/LoadWorld`, `ZoneSystem.Awake/Start/
+  GenerateLocationsIfNeeded`, `Minimap.Awake/Start`, `EnvMan.Awake`, `DLCMan.Awake`, `Game.Awake/Start/SpawnPlayer/
+  CollectResources`, the first rendered frame after `LoadMainScene` and after the main scene load, the main scene
   load (request -> `sceneLoaded`, includes the menu scene's unload). Coroutine work after these calls (location
   placement, the scene unload itself) shows up as gaps.
-- Jotunn: item/piece registration into ObjectDB, when Jotunn is installed.
+- Jotunn, when installed: `PrefabManager` / `ItemManager` / `PieceManager` / `CreatureManager` registration steps
+  and event invocations, `MockManager.FixReferences` (outermost call) and `FixQueuedMaterials`.
 
 Limits: plugin work in Unity `Start()`/coroutines after `Awake` is not attributed to the plugin. Native Unity
 work between hooked calls shows up as the gap between menu-ready time and the hooked total.

@@ -30,6 +30,7 @@ namespace FastStartup.Profiling
         /// <summary>Synthetic thread ids for async work that does not nest on a real thread.</summary>
         public const int LaneScenes = 1000;
         public const int LaneAsyncBundles = 1001;
+        public const int LaneWorldLoad = 1002;
 
         private static readonly object Lock = new object();
         private static readonly List<TraceEvent> Events = new List<TraceEvent>(16384);

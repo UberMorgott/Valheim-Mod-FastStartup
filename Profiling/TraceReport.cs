@@ -20,6 +20,8 @@ namespace FastStartup.Profiling
                 .Append(",\"args\":{\"name\":\"scene loads (async)\"}},\n");
             sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.LaneAsyncBundles)
                 .Append(",\"args\":{\"name\":\"bundle loads (async)\"}},\n");
+            sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.LaneWorldLoad)
+                .Append(",\"args\":{\"name\":\"world load (wall clock)\"}},\n");
             sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.MainThreadId)
                 .Append(",\"args\":{\"name\":\"main\"}}");
             foreach (TraceEvent e in events)
@@ -114,6 +116,7 @@ namespace FastStartup.Profiling
                 sb.AppendLine("  Self-time tables below include the menu wait (idle frames are not spans, so it adds little).");
             }
             sb.AppendLine();
+            WorldLoad(sb, events, self);
 
             sb.AppendLine("== Lifecycle marks (ms since process start; GC counts gen0/1/2; managed heap) ==");
             foreach (TraceEvent m in events.Where(e => e.Ph == 'i').OrderBy(e => e.Start))
@@ -220,15 +223,81 @@ namespace FastStartup.Profiling
             {
                 sb.AppendLine(F("{0,10:F1} {1,4}x  {2,-28} {3}", g.Ms, g.N, g.Target, g.Owner));
             }
-            foreach (TraceEvent e in events.Where(e => e.Cat == "jotunn").OrderByDescending(e => e.End - e.Start).Take(15))
+            foreach (var g in events.Where(e => e.Cat == "jotunn").GroupBy(e => e.Name)
+                         .Select(g => new { Name = g.Key, N = g.Count(), Ms = g.Sum(e => StartupTrace.DurMs(e.Start, e.End)) })
+                         .OrderByDescending(g => g.Ms).Take(TopN))
             {
-                sb.AppendLine(F("{0,10:F1}  jotunn {1}", StartupTrace.DurMs(e.Start, e.End), e.Name));
+                sb.AppendLine(F("{0,10:F1} {1,4}x  jotunn {2}", g.Ms, g.N, g.Name));
             }
             foreach (TraceEvent e in events.Where(e => e.Cat == "scene"))
             {
                 sb.AppendLine(F("{0,10:F1}  scene {1} ({2})", StartupTrace.DurMs(e.Start, e.End), e.Name, e.Detail));
             }
             return sb.ToString();
+        }
+
+        /// <summary>World-load wall clock (click -> loading screen -> ZoneSystem.Start) and the spans inside that
+        /// window ranked by self time, mod patches and Jotunn handlers named by owner.</summary>
+        private static void WorldLoad(StringBuilder sb, List<TraceEvent> events, Dictionary<TraceEvent, double> self)
+        {
+            List<TraceEvent> wall = events.Where(e => e.Cat == "worldload").OrderBy(e => e.Name, StringComparer.Ordinal).ToList();
+            long from, to;
+            if (wall.Count > 0)
+            {
+                from = wall.Min(e => e.Start);
+                to = wall.Max(e => e.End);
+            }
+            else
+            {
+                TraceEvent request = events.FirstOrDefault(e => e.Cat == "game" && e.Name == "FejdStartup.LoadMainScene");
+                TraceEvent zone = events.FirstOrDefault(e => e.Cat == "game" && e.Name == "ZoneSystem.Start" && request != null && e.Start > request.Start);
+                if (request == null || zone == null)
+                {
+                    return;
+                }
+                from = request.Start;
+                to = zone.End;
+            }
+            sb.AppendLine("== World load wall clock (ms; click = FejdStartup.OnWorldStart start) ==");
+            foreach (TraceEvent e in wall)
+            {
+                sb.AppendLine(F("{0,10:F1}  {1}{2}", StartupTrace.DurMs(e.Start, e.End), e.Name, e.Detail != null ? "  (" + e.Detail + ")" : ""));
+            }
+            if (wall.Count == 0)
+            {
+                sb.AppendLine("  (no rendered-frame mark: window = LoadMainScene start -> ZoneSystem.Start end)");
+            }
+            var inWindow = self.Where(kv => kv.Key.Start >= from && kv.Key.End <= to && kv.Key.Tid == StartupTrace.MainThreadId).ToList();
+            sb.AppendLine(F("== World load culprits: top {0} by self time in that window ({1:F0} ms, {2:F0} ms in hooked main-thread spans) ==",
+                TopN, StartupTrace.DurMs(from, to), inWindow.Sum(kv => kv.Value)));
+            sb.AppendLine("      self       incl  calls  category    what (owner [assembly] :: method @ hooked target)");
+            foreach (var g in inWindow.GroupBy(kv => kv.Key.Cat + "|" + Culprit(kv.Key))
+                         .Select(g => new
+                         {
+                             Cat = g.First().Key.Cat,
+                             What = Culprit(g.First().Key),
+                             N = g.Count(),
+                             Self = g.Sum(kv => kv.Value),
+                             Incl = g.Sum(kv => StartupTrace.DurMs(kv.Key.Start, kv.Key.End)),
+                         })
+                         .OrderByDescending(g => g.Self).Take(TopN))
+            {
+                sb.AppendLine(F("{0,10:F1} {1,10:F1} {2,6}x  {3,-10}  {4}", g.Self, g.Incl, g.N, g.Cat, g.What));
+            }
+            sb.AppendLine("  game.patch = one mod prefix/postfix/finalizer or Jotunn event handler (needs TimeModPatches); game = that");
+            sb.AppendLine("  method's patches not timed one by one; game.body = vanilla body; jotunn = Jotunn's own registration step.");
+            sb.AppendLine();
+        }
+
+        private static string Culprit(TraceEvent e)
+        {
+            switch (e.Cat)
+            {
+                case "game.patch": return e.Name + " :: " + e.Detail + " @ " + e.Detail2;
+                case "game.body": return "vanilla " + e.Name;
+                case "game": return "untimed mod patches on " + e.Name;
+                default: return Key(e);
+            }
         }
 
         /// <summary>One log line: end time (menu ready / first spawn) plus the three largest self-time sinks.</summary>
