@@ -42,6 +42,15 @@ Merge Localization 23.7/29.3, Delay Config Save 31.8/33.1, LocalizationCache 26.
 cut Harmony self time 5.4-6.2 s -> 3.2-3.8 s; Merge Localization / LocalizationCache cut `SetupLanguage`
 1.1-1.2 s -> 0.45-0.6 s.
 
+World load (0.4.0 profiler, `summary-world.txt`): the Almanac postfix on `ObjectDB` took 10.7 s of the world-load
+freeze; fixed upstream in Almanac 3.8.0.2 (17 ms).
+
+## Changes
+
+- 0.4.0: world-load profiling lane (recording to the first player spawn, world-load wall clock, top sinks named
+  per owner), per-owner timing of world-load targets, Jotunn event-handler probe; fix for the Mono crash when the
+  patch owner probe hooked bundled ItemManager/PieceManager helper libraries.
+
 ## Install
 
 Copy `bin\Release\FastStartup.dll` to `Valheim\BepInEx\patchers\`. It is a patcher, not a plugin, so it does not
