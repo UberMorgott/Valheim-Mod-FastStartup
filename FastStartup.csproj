@@ -43,6 +43,10 @@
       <HintPath>$(BepInExCoreDir)\MonoMod.RuntimeDetour.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="MonoMod.Utils">
+      <HintPath>$(BepInExCoreDir)\MonoMod.Utils.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Mono.Cecil">
       <HintPath>$(BepInExCoreDir)\Mono.Cecil.dll</HintPath>
       <Private>false</Private>

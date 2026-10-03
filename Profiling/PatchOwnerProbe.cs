@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,6 +7,7 @@ using System.Reflection;
 using BepInEx;
 using FastStartup.Core;
 using HarmonyLib;
+using MonoMod.Utils;
 
 namespace FastStartup.Profiling
 {
@@ -15,11 +17,17 @@ namespace FastStartup.Profiling
     /// <see cref="GameLifecycleProbe"/> target is itself patched with a First prefix / Last finalizer timing pair.
     /// Category <c>game.patch</c>, name = owner Harmony ID + [assembly] (helper IDs such as
     /// org.bepinex.helpers.ItemManager are shared by many mods), detail = patch method, detail2 = patched game method.
-    /// Crash guard: detouring forces Mono to compile the patch method early, and for one method here
-    /// (Warfare's ItemManager.Item.Patch_FejdStartup) that native compile crashed the process in
-    /// <c>RuntimeMethodHandle.GetFunctionPointer</c>, which no managed catch can stop. The method being detoured is
-    /// written to <c>patch-probe.pending</c> first; if the process dies, the next launch moves it to
-    /// <c>patch-probe.skip</c> and never touches it again.
+    /// Mixed-assembly IL copies: Harmony/MonoMod detour a method through IL copies of it (DynamicMethods), whose
+    /// tokens MonoMod resolves through a static cache keyed by Cecil full name + the assembly of the declaring/element
+    /// type only. A generic instantiation over a mod type, e.g. <c>List&lt;PieceManager.BuildPiece&gt;.Enumerator</c>, is
+    /// therefore keyed by mscorlib, and the helper libraries bundled into many mods (ItemManager, PieceManager ...)
+    /// define the same full names in every mod: the copy of Armory's <c>PieceManager.BuildPiece.Patch_FejdStartup</c>
+    /// got a local of Warfare's <c>List&lt;BuildPiece&gt;.Enumerator</c> while its calls return Armory's, and Mono's JIT
+    /// aborted the process natively (<c>g_assert (var-&gt;klass == klass)</c>, method-to-ir.c, inside
+    /// <c>RuntimeMethodHandle.GetFunctionPointer</c>). So the cache is emptied around each wrap (<see cref="Wrap"/>).
+    /// Safety net for any other native crash while hooking: the method being detoured is written to
+    /// <c>patch-probe.pending</c> first; if the process dies, the next launch moves it to <c>patch-probe.skip</c> and
+    /// never touches it again.
     /// Limits: transpiler cost is inside the game body; a tiny patch method the JIT inlined into an already built
     /// wrapper is not seen (its cost is negligible by definition).
     /// </summary>
@@ -49,6 +57,10 @@ namespace FastStartup.Profiling
                 File.Delete(pendingPath);
             }
 
+            if (ResolveCache == null)
+            {
+                Log.Warning("Patch owner probe: MonoMod.Utils has no ReflectionHelper.ResolveReflectionCache (other version), mod patch methods are not timed");
+            }
             _harmony = harmony;
             _pendingPath = pendingPath;
             _skip = skip;
@@ -107,9 +119,17 @@ namespace FastStartup.Profiling
             {
                 return false;
             }
+            if (ResolveCache == null)
+            {
+                return false;
+            }
             try
             {
                 File.WriteAllText(pendingPath, id);
+                // The IL copies of this method are resolved against an empty cache, so every generic instantiation in
+                // them is built from this method's own assembly; emptied again afterwards so no later patch (ours or a
+                // mod's) inherits this assembly's instantiations under the shared keys.
+                ClearResolveCache();
                 harmony.Patch(method,
                     prefix: new HarmonyMethod(AccessTools.Method(typeof(PatchOwnerProbe), nameof(Prefix)), Priority.First),
                     finalizer: new HarmonyMethod(AccessTools.Method(typeof(PatchOwnerProbe), nameof(Finalizer)), Priority.Last));
@@ -120,6 +140,29 @@ namespace FastStartup.Profiling
             {
                 Log.Warning($"Patch owner probe: cannot time {id} ({owner}): {e.Message}");
                 return false;
+            }
+            finally
+            {
+                ClearResolveCache();
+            }
+        }
+
+        /// <summary>MonoMod.Utils 22.01.29 (BepInEx\core) <c>ReflectionHelper.ResolveReflectionCache</c>: Cecil reference
+        /// -> reflection member, keyed by full name + the assembly of the declaring/element type only (decompiled
+        /// <c>_ResolveReflection</c>). Null when this MonoMod has no such field; wrapping is then off, because the
+        /// mixed-up copies below cannot be ruled out.</summary>
+        private static readonly IDictionary ResolveCache =
+            AccessTools.Field(typeof(ReflectionHelper), "ResolveReflectionCache")?.GetValue(null) as IDictionary;
+
+        private static void ClearResolveCache()
+        {
+            if (ResolveCache == null)
+            {
+                return;
+            }
+            lock (ResolveCache)
+            {
+                ResolveCache.Clear();
             }
         }
 
