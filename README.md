@@ -81,9 +81,10 @@ Where the rest of the world load goes (profiler, frame probe + Awake/Start probe
 
 ## Changes
 
-- Unreleased: world-load module work (FastLakes, PregenCache, PrefetchBiomeData, PrefetchSectors, river cache
+- 0.6.0: world-load module work (FastLakes, PregenCache, PrefetchBiomeData, PrefetchSectors, river cache
   refresh before parallel builds), `world load` log line with profiler off, profiler frame probe (player-loop phases
   per frame, click -> spawn), Awake/Start probe (`TimeUnityMessages`), spans inside `ZNet.Awake` / `ZNet.LoadWorld`.
+  Measured: world load 18.26 -> 13.95 s, freeze 5.07 -> 2.59 s.
 - 0.5.0: WorldGen module (parallel biome map, early location rejects, loading time budget); spawn-window
   profiling (world generation spans, aggregated spawn-window timing); fix: WorldGen prefix time is attributed to its
   owner instead of untimed mod patches.
