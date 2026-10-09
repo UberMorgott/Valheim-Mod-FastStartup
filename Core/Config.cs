@@ -27,6 +27,19 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> DumpModHotspots { get; private set; }
 
+        public static ConfigEntry<bool> ProfilerTimeSpawnWindow { get; private set; }
+
+        public static ConfigEntry<bool> ParallelBiomeData { get; private set; }
+
+        public static ConfigEntry<bool> EarlyReject { get; private set; }
+
+        public static ConfigEntry<float> LoadingTimeBudget { get; private set; }
+
+        public static ConfigEntry<bool> DumpLocations { get; private set; }
+
+        /// <summary>Any [WorldGen] key that needs the WorldGen hooks.</summary>
+        public static bool WorldGenAny => ParallelBiomeData.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
+
         public static void Load()
         {
             var file = new ConfigFile(Path.Combine(Paths.ConfigPath, "FastStartup.cfg"), true);
@@ -69,6 +82,26 @@ namespace FastStartup.Core
             DumpModHotspots = file.Bind("Diagnostics", "DumpModHotspots", false,
                 "At the main menu write the state the ModHotspots replacements produce (e.g. every ShaderReplacer material " +
                 "and its shader) to BepInEx\\FastStartup\\modhotspots-state.txt, for diffing a toggle off against on.");
+            ProfilerTimeSpawnWindow = file.Bind("Profiler", "TimeSpawnWindow", false,
+                "With [Profiler] Enabled: also time the per-frame world-load methods between the main scene request and the first " +
+                "player spawn (zone creation, object creation, terrain readiness, spawn point search, teleport) as count / total / " +
+                "max per method (and per mod patch with TimeModPatches). Off after the first spawn. Read once at launch.");
+            ParallelBiomeData = file.Bind("WorldGen", "ParallelBiomeData", true,
+                "Compute the 2048x2048 biome/height map built on every world load and connect (AltBiomeWorldData." +
+                "GenerateBiomePoints) on all CPU cores, same per-cell formula, identical result. Falls back to vanilla while another " +
+                "mod patches the world generator methods it calls. Read once at launch.");
+            EarlyReject = file.Bind("WorldGen", "EarlyReject", true,
+                "New worlds: during location placement, run the cheap later checks of a candidate point (distance to similar " +
+                "locations, vegetation, alt-biome) before the 10-sample terrain delta, and skip the samples for a candidate those " +
+                "checks reject. Same random sequence and same placed locations as vanilla. Read once at launch.");
+            LoadingTimeBudget = file.Bind("WorldGen", "LoadingTimeBudget", 0.25f,
+                new ConfigDescription("Seconds of location generation per frame while a new world is generated (vanilla 0.1; the " +
+                                      "intro/cinematic budget is left alone). 0 = vanilla. Read once at launch.",
+                    new AcceptableValueRange<float>(0f, 2f)));
+            DumpLocations = file.Bind("WorldGen", "DumpLocations", false,
+                "Diagnostic: when locations are generated (or a world with generated locations loads) write every location " +
+                "instance (prefab, zone, position as float bits) and the SHA-256 of the biome/height map to " +
+                "BepInEx\\FastStartup\\diag\\locations-<seed>.txt, for diffing WorldGen off against on. Also logs world-gen timings.");
         }
     }
 }

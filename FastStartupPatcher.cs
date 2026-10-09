@@ -6,6 +6,7 @@ using FastStartup.HarmonyBatch;
 using FastStartup.ModHotspots;
 using FastStartup.Profiling;
 using FastStartup.Translations;
+using FastStartup.WorldGen;
 using HarmonyLib;
 using Mono.Cecil;
 
@@ -26,6 +27,7 @@ namespace FastStartup
         private const string ConfigSaveHarmonyId = "morgott.faststartup.configsave";
         private const string HarmonyBatchHarmonyId = "morgott.faststartup.harmonybatch";
         private const string ModHotspotsHarmonyId = "morgott.faststartup.modhotspots";
+        private const string WorldGenHarmonyId = "morgott.faststartup.worldgen";
 
         public static IEnumerable<string> TargetDLLs { get; } = new string[0];
 
@@ -60,7 +62,8 @@ namespace FastStartup
                 bool dump = Config.DumpHarmonyState?.Value == true;
                 bool hotspots = Config.ShaderReplacerFixEnabled?.Value == true;
                 bool hotspotsDump = Config.DumpModHotspots?.Value == true;
-                if (bundles || configSave || harmonyBatching || localization || dump || hotspots || hotspotsDump)
+                bool worldGen = Config.ParallelBiomeData != null && Config.WorldGenAny;
+                if (bundles || configSave || harmonyBatching || localization || dump || hotspots || hotspotsDump || worldGen)
                 {
                     Lifecycle.Install(new Harmony(LifecycleHarmonyId));
                 }
@@ -93,6 +96,13 @@ namespace FastStartup
                 if (hotspotsDump)
                 {
                     ModHotspotsDump.Install();
+                }
+                if (worldGen)
+                {
+                    // Game types: only once the engine is up.
+                    bool profiler = Config.ProfilerEnabled?.Value == true;
+                    Lifecycle.ChainloaderInitialized += () =>
+                        Log.Guard("WorldGen install", () => WorldGenModule.Install(new Harmony(WorldGenHarmonyId), profiler));
                 }
             });
         }

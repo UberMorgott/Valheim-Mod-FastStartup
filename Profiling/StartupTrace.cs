@@ -31,6 +31,8 @@ namespace FastStartup.Profiling
         public const int LaneScenes = 1000;
         public const int LaneAsyncBundles = 1001;
         public const int LaneWorldLoad = 1002;
+        public const int LaneWorldGen = 1003;
+        public const int LaneSpawnWindow = 1004;
 
         private static readonly object Lock = new object();
         private static readonly List<TraceEvent> Events = new List<TraceEvent>(16384);
