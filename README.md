@@ -4,10 +4,12 @@ BepInEx 5 preloader patcher for Valheim startup speed. Personal build.
 
 Modules: **startup profiler**, **bundle cache** (replaces Fast AssetBundle Loader), **config save batcher**,
 **localization cache** and **Harmony batching** (these three replace StartupAccelerator and LocalizationCache),
-**mod hotspots** (faster equivalents of slow startup code in other mods' embedded helpers).
+**mod hotspots** (faster equivalents of slow startup code in other mods' embedded helpers), **world generation**
+(parallel biome map on every world load / connect, faster location placement on new worlds, same output).
 Design notes: `E:\DEV\Valheim\docs\designs\startup-accel-analysis.md`.
 
-ValheimPlus overlap: none. ValheimPlus has no startup-speed, bundle-cache or profiling feature.
+ValheimPlus overlap: none. ValheimPlus has no startup-speed, bundle-cache, profiling or world-generation speed
+feature (its cfg has no world/zone/location generation section).
 
 Everything FastStartup writes to disk lives under `Valheim\BepInEx\FastStartup\` (profile, bundle cache, Harmony
 state dump); nothing goes to AppData, LocalLow or %TEMP%. Deleting that folder resets it all. The localization
@@ -77,9 +79,64 @@ Config `BepInEx\config\FastStartup.cfg`:
 - `[Diagnostics] DumpModHotspots` (default `false`): write what the ModHotspots replacements produce (every
   ShaderReplacer material and its shader) at the main menu to `BepInEx\FastStartup\modhotspots-state.txt`, for
   diffing a toggle off against on.
+- `[Profiler] TimeSpawnWindow` (default `false`): with the profiler on, also time the per-frame world-load methods
+  between the main scene request and the first spawn, aggregated (see "Profiler output").
+- `[WorldGen] ParallelBiomeData` (default `true`): build the biome/height map of every world load and connect on all
+  cores (see "World generation").
+- `[WorldGen] EarlyReject` (default `true`): new worlds, skip the terrain-delta samples of location candidates that a
+  later cheap check rejects anyway.
+- `[WorldGen] LoadingTimeBudget` (default `0.25`): seconds of location generation per frame while a new world is
+  generated (vanilla 0.1; 0 = vanilla).
+- `[WorldGen] DumpLocations` (default `false`): determinism dump at location generation,
+  `BepInEx\FastStartup\diag\locations-<seed>.txt`.
 
 All keys are read once at launch. With any module on, the log gets `menu ready <s> s after process start` at the
 end of the first `FejdStartup.Start` (profiler off too).
+
+## World generation
+
+Harmony ID `morgott.faststartup.worldgen`, installed after `Chainloader.Initialize`. Every feature produces vanilla's
+output; the log always gets `WorldGen: VerifyBiomeData <ms> (GenerateBiomePoints <ms> parallel|vanilla, GenerateSectors
+<ms>)` per world load / connect and, with EarlyReject or the profiler on, a location generation summary.
+
+- **ParallelBiomeData**: `AltBiomeWorldData.VerifyBiomeData` (every server world load, ZNet.cs:464, and every client
+  connect, ZNet.cs:1117) rebuilds a 2048x2048 biome + height map, one `WorldGenerator.GetBiome` + `GetBiomeHeight` per
+  cell, on the main thread. Those are pure functions of the seed (thread-safe native `Mathf.PerlinNoise`, FastNoise
+  reads only its settings, the river lookup is a read-only dictionary plus a one-grid cache under the generator's own
+  `ReaderWriterLockSlim`; the HeightmapBuilder thread already calls them concurrently). A replacing prefix runs the
+  same loop body row by row with `Parallel.For` (each row writes only its own cells) and stores the result exactly as
+  vanilla. `GenerateSectors` (flood fill, alt-biome RNG) stays sequential and untouched. Vanilla path whenever a
+  foreign patch is on any method of `WorldGenerator`, `DUtils`, `FastNoise`, `BiomeHelpers` or the `AltBiomeWorldData`
+  helpers, a foreign transpiler is on `GenerateBiomePoints`, another prefix skipped it, or a worker throws (logged).
+- **EarlyReject** (new worlds): per candidate point `ZoneSystem.GenerateLocationsTimeSliced` (ZoneSystem.cs:1871)
+  computes the terrain delta (10 x `Random.insideUnitCircle` + 10 x `GetHeight`, :1995) before the RNG-free checks
+  similar / not-similar / vegetation / alt-biome (:2002-2037), any of which ends in the same `continue`. The location
+  enumerator is wrapped to know the current location; a prefix on `WorldGenerator.GetTerrainDelta`, only inside it and
+  only for the call with the location's exterior radius, runs those checks first and, when one fails, draws
+  `insideUnitCircle` exactly 10 times and returns delta = +Inf (same RNG state, same `continue`). Off for a location
+  whose `m_maxTerrainDelta` is not finite, and while a foreign patch is on any method involved. The stateful surround
+  vegetation check is never evaluated early. Only the debug-build error counters differ.
+- **LoadingTimeBudget**: `ZoneSystem.Update` sets `m_timeSlicedGenerationTimeBudget` to 0.1 s per frame while the
+  server generates locations (the intro / cinematic frame-rate budget is left alone); a postfix raises that case to the
+  configured value. Placement does not depend on where the coroutine yields (the generation RNG state is swapped around
+  every yield and every location type reseeds).
+- **DumpLocations**: at `LocationsGenerated` writes `BepInEx\FastStartup\diag\locations-<seed>.txt`: SHA-256 of
+  `PointBiomes` / `PointHeights`, then every location instance sorted by prefab name and zone, position as float bits.
+
+Measured on the lab dedicated server (Ryzen 7 9800X3D, 16 threads; the pack's 35 server plugins, 197 location types
+incl. modded, ~12.8k instances; 3 new worlds x 2 runs each, every run a fresh generation from the same `.fwl`):
+
+| | vanilla (WorldGen off) | WorldGen on |
+| --- | --- | --- |
+| `GenerateBiomePoints` (every load / connect) | 3.0-3.45 s | 0.59-1.15 s |
+| `VerifyBiomeData` (+ sequential `GenerateSectors` 0.44-0.69 s) | 3.43-3.89 s | 1.05-1.79 s |
+| location generation (vanilla `Genloc duration`) | 19.3-22.9 s | 14.5-16.0 s |
+
+- EarlyReject skipped 539k-561k of 778k-858k terrain-delta calls; EarlyReject alone 16.2 / 17.8 s,
+  LoadingTimeBudget alone 22.6 / 23.1 s (no gain on a dedicated server, whose frames are cheap; on a host with the
+  loading screen it saves the frames between slices, not measured yet).
+- Determinism: for each of the 3 seeds the 4 dumps (off, on, off, on) are byte-identical (biome map SHA, heights
+  SHA, all location instances); on the first seed also the EarlyReject-only, budget-only and profiler-on dumps.
 
 ## Mod hotspots
 
@@ -310,6 +367,19 @@ What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per
   placement, the scene unload itself) shows up as gaps.
 - Jotunn, when installed: `PrefabManager` / `ItemManager` / `PieceManager` / `CreatureManager` registration steps
   and event invocations, `MockManager.FixReferences` (outermost call) and `FixQueuedMaterials`.
+
+- World generation: `AltBiomeWorldData.VerifyBiomeData/GenerateBiomePoints/GenerateSectors`, `ZoneSystem.SpawnZone/
+  PlaceLocations/SpawnLocation`, `DungeonGenerator.Generate(int, SpawnMode)`; on a new world one span per location type
+  (lane "location generation": wall clock, busy ms, terrain-delta calls, delta rejects, EarlyReject skips) and a
+  "Location generation" summary section.
+- `[Profiler] TimeSpawnWindow`: `ZoneSystem.CreateLocalZones/PokeLocalZone/IsActiveAreaLoaded`, `ZNetScene.
+  CreateDestroyObjects/CreateObjects/IsAreaReady`, `HeightmapBuilder.IsTerrainReady/RequestTerrainSync/Build` (the
+  builder thread), `Game.FindSpawnPoint`, `Player.UpdateTeleport`, `DungeonGenerator.Load`, `SnapToGround.SnappAll`,
+  `Heightmap.ForceGenerateAll`, between `FejdStartup.LoadMainScene` end and the end of the first `Game.SpawnPlayer`.
+  First prefix / Last finalizer (other mods' patches, e.g. Skidbladnir's, are inside); calls / total / max per method
+  (with `TimeModPatches` also per mod patch method), written as one span per method on the "spawn window totals" lane
+  and in the "Spawn window" summary section; the three one-shot calls also get a span each. After the first spawn
+  the hooks only push/pop a stack entry.
 
 Limits: plugin work in Unity `Start()`/coroutines after `Awake` is not attributed to the plugin. Native Unity
 work between hooked calls shows up as the gap between menu-ready time and the hooked total.
