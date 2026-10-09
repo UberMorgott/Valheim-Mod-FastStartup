@@ -88,6 +88,15 @@ namespace FastStartup.Profiling
             AccessTools.DeclaredMethod(typeof(Game), "Awake"),                          // Game.cs:238
             AccessTools.DeclaredMethod(typeof(Game), "Start"),                          // Game.cs:283
             AccessTools.DeclaredMethod(typeof(Game), "SpawnPlayer"),                    // Game.cs:484 (first end = world ready)
+            // World generation (ValheimDecompiled-1.0.16): biome map on every load / connect (ZNet.cs:464, :1117), zone spawns.
+            AccessTools.DeclaredMethod(typeof(AltBiomeWorldData), nameof(AltBiomeWorldData.VerifyBiomeData)),     // AltBiomeWorldData.cs:72
+            AccessTools.DeclaredMethod(typeof(AltBiomeWorldData), nameof(AltBiomeWorldData.GenerateBiomePoints)), // AltBiomeWorldData.cs:99
+            AccessTools.DeclaredMethod(typeof(AltBiomeWorldData), nameof(AltBiomeWorldData.GenerateSectors)),     // AltBiomeWorldData.cs:148
+            AccessTools.DeclaredMethod(typeof(ZoneSystem), "SpawnZone"),                                         // ZoneSystem.cs:1312
+            AccessTools.DeclaredMethod(typeof(ZoneSystem), "PlaceLocations"),                                    // ZoneSystem.cs:2189
+            AccessTools.DeclaredMethod(typeof(ZoneSystem), "SpawnLocation"),                                     // ZoneSystem.cs:2391
+            AccessTools.DeclaredMethod(typeof(DungeonGenerator), nameof(DungeonGenerator.Generate),
+                new[] { typeof(int), typeof(ZoneSystem.SpawnMode) }),                                            // DungeonGenerator.cs:193
         };
 
         public static void Install(Harmony harmony)
@@ -173,6 +182,7 @@ namespace FastStartup.Profiling
                 _loadMainStart = start;
                 _loadMainEnd = end;
                 _awaitMainScene = true;
+                SpawnWindowProbe.Open();
                 StartEndOfFrame(FejdStartup.instance, MenuFrameRendered);
             }
             else if (_zoneStart == 0 && _loadMainEnd != 0 && original.DeclaringType == typeof(ZoneSystem) && original.Name == "Start")
@@ -184,6 +194,7 @@ namespace FastStartup.Profiling
             else if (!_worldReady && !failed && original.DeclaringType == typeof(Game) && original.Name == "SpawnPlayer")
             {
                 _worldReady = true;
+                Log.Guard("Spawn window close", SpawnWindowProbe.Close);
                 StartupTrace.Mark(WorldReadyMark);
                 Log.Guard("WorldReady handlers", () => WorldReady?.Invoke());
             }

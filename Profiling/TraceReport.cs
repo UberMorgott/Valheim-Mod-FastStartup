@@ -22,6 +22,10 @@ namespace FastStartup.Profiling
                 .Append(",\"args\":{\"name\":\"bundle loads (async)\"}},\n");
             sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.LaneWorldLoad)
                 .Append(",\"args\":{\"name\":\"world load (wall clock)\"}},\n");
+            sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.LaneWorldGen)
+                .Append(",\"args\":{\"name\":\"location generation (per location type, wall clock)\"}},\n");
+            sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.LaneSpawnWindow)
+                .Append(",\"args\":{\"name\":\"spawn window totals (aggregated, duration = total)\"}},\n");
             sb.Append("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":").Append(StartupTrace.MainThreadId)
                 .Append(",\"args\":{\"name\":\"main\"}}");
             foreach (TraceEvent e in events)
@@ -233,7 +237,35 @@ namespace FastStartup.Profiling
             {
                 sb.AppendLine(F("{0,10:F1}  scene {1} ({2})", StartupTrace.DurMs(e.Start, e.End), e.Name, e.Detail));
             }
+            AggregatedSections(sb, events);
             return sb.ToString();
+        }
+
+        /// <summary>WorldGen per-location spans and the spawn-window totals (both on their own lanes, not in self time).</summary>
+        private static void AggregatedSections(StringBuilder sb, List<TraceEvent> events)
+        {
+            List<TraceEvent> locations = events.Where(e => e.Cat == "worldgen").ToList();
+            if (locations.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine(F("== Location generation: {0} location types, first start -> last end {1:F0} ms (wall ms, longest {2}) ==",
+                    locations.Count, StartupTrace.DurMs(locations.Min(e => e.Start), locations.Max(e => e.End)), TopN));
+                foreach (TraceEvent e in locations.OrderByDescending(e => e.End - e.Start).Take(TopN))
+                {
+                    sb.AppendLine(F("{0,10:F1}  {1}  ({2})", StartupTrace.DurMs(e.Start, e.End), e.Name, e.Detail));
+                }
+            }
+            List<TraceEvent> window = events.Where(e => e.Cat == "spawnwindow").ToList();
+            if (window.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("== Spawn window (LoadMainScene end -> first spawn): per method / mod patch, total ms ==");
+                foreach (TraceEvent e in window.OrderByDescending(e => e.End - e.Start))
+                {
+                    sb.AppendLine(F("{0,10:F1}  {1}{2}  ({3})", StartupTrace.DurMs(e.Start, e.End), e.Name,
+                        e.Detail2 != null ? " @ " + e.Detail2 : "", e.Detail));
+                }
+            }
         }
 
         /// <summary>World-load wall clock (click -> loading screen -> ZoneSystem.Start) and the spans inside that
