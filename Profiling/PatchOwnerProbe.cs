@@ -170,10 +170,10 @@ namespace FastStartup.Profiling
         /// -> reflection member, keyed by full name + the assembly of the declaring/element type only (decompiled
         /// <c>_ResolveReflection</c>). Null when this MonoMod has no such field; wrapping is then off, because the
         /// mixed-up copies below cannot be ruled out.</summary>
-        private static readonly IDictionary ResolveCache =
+        internal static readonly IDictionary ResolveCache =
             AccessTools.Field(typeof(ReflectionHelper), "ResolveReflectionCache")?.GetValue(null) as IDictionary;
 
-        private static void ClearResolveCache()
+        internal static void ClearResolveCache()
         {
             if (ResolveCache == null)
             {
@@ -238,7 +238,7 @@ namespace FastStartup.Profiling
         }
 
         /// <summary>Stable across launches of the same build: assembly name + MVID + metadata token + readable name.</summary>
-        private static string Identity(MethodInfo method) =>
+        internal static string Identity(MethodInfo method) =>
             method.Module.Assembly.GetName().Name + "|" + method.Module.ModuleVersionId.ToString("N") + "|" +
             method.MetadataToken.ToString("x8") + "|" + HarmonyProfiler.Describe(method);
 

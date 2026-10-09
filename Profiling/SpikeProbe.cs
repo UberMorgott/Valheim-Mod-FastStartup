@@ -11,6 +11,7 @@ using BepInEx;
 using FastStartup.Core;
 using HarmonyLib;
 using Unity.Profiling;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Profiling.LowLevel.Unsafe;
 using UnityEngine;
 using UnityEngine.LowLevel;
@@ -101,6 +102,7 @@ namespace FastStartup.Profiling
             public string TopSubs;
             public float ScriptMs, RenderMs, PhysicsMs, LoadingMs, OutsideMs, ProbeMs;
             public string Cause;
+            public string ScriptTop;
         }
 
         private sealed class SegStats
@@ -225,6 +227,10 @@ namespace FastStartup.Profiling
             }
             hooked += Hook(harmony, AccessTools.DeclaredMethod(typeof(Texture2D), "Apply", new[] { typeof(bool), typeof(bool) }), STexApply, nameof(Fin), null);
             Lifecycle.MenuReady += () => Log.Guard("Spike probe player loop", InstallLoop);
+            if (Config.ScriptBreakdown.Value)
+            {
+                Lifecycle.MenuReady += () => Log.Guard("Script probe install", ScriptProbe.Install);
+            }
             Application.quitting += () => Log.Guard("Spike probe flush", () => Write(true));
             Log.Info($"Spike probe: {hooked} hooks, threshold {_thresholdMs:F0} ms; player loop at the main menu");
         }
@@ -243,6 +249,9 @@ namespace FastStartup.Profiling
                 finalizer: new HarmonyMethod(AccessTools.Method(typeof(SpikeProbe), finalizer), Priority.Last));
             return 1;
         }
+
+        /// <summary>A hooked call is running (ScriptProbe keeps time spent inside hooks apart).</summary>
+        internal static bool InHook => _depth > 0;
 
         // ---- hooks ----
 
@@ -267,6 +276,7 @@ namespace FastStartup.Profiling
                 return -1;
             }
             long total = Stopwatch.GetTimestamp() - state;
+            ScriptProbe.AddChild(total);
             _depth--;
             long self = total - StackChild[_depth];
             if (_depth > 0)
@@ -459,7 +469,7 @@ namespace FastStartup.Profiling
             PlayerLoop.SetPlayerLoop(root);
             _active = true;
             Log.Info($"Spike probe: {_subNames.Length} player-loop markers; logical cores Environment={Environment.ProcessorCount} " +
-                     $"SystemInfo={SystemInfo.processorCount}; ProfilerRecorder metrics available={_availableMetrics}; frame timing stats={_frameTimingEnabled}");
+                     $"SystemInfo={SystemInfo.processorCount} JobWorkerCount={JobsUtility.JobWorkerCount}/{JobsUtility.JobWorkerMaximumCount}; ProfilerRecorder metrics available={_availableMetrics}; frame timing stats={_frameTimingEnabled}");
         }
 
         private static bool IsForeign(PlayerLoopSystem s) => s.type != null && s.type.Assembly != typeof(PlayerLoop).Assembly && s.type.Namespace?.StartsWith("UnityEngine") != true;
@@ -647,6 +657,7 @@ namespace FastStartup.Profiling
             Player player = Player.m_localPlayer;
             if (player == null)
             {
+                ScriptProbe.EndFrame(false, false, ms);
                 return;
             }
             if (_playStart == 0)
@@ -678,13 +689,17 @@ namespace FastStartup.Profiling
             {
                 _seg.MaxMs = (float)ms;
             }
-            if (ms >= _thresholdMs)
+            bool spike = ms >= _thresholdMs;
+            string scriptTop = ScriptProbe.EndFrame(true, spike, ms);
+            if (spike)
             {
                 _seg.Spikes++;
                 _seg.SpikeMs += ms;
                 if (Spikes.Count < MaxSpikes)
                 {
-                    Spikes.Add(Record(player, pos, zone, now, ms, d0, d1, d2));
+                    Spike s = Record(player, pos, zone, now, ms, d0, d1, d2);
+                    s.ScriptTop = scriptTop;
+                    Spikes.Add(s);
                 }
             }
             long spent = Stopwatch.GetTimestamp() - t0;
@@ -784,21 +799,22 @@ namespace FastStartup.Profiling
             return s;
         }
 
+        /// <summary>Script subsystem time no hook covers (minus the probe's own time).</summary>
+        private static float Residual(Spike s) => Math.Max(0f, s.ScriptMs - s.SelfMs.Sum() - s.ProbeMs);
+
         private static string Classify(Spike s, List<(int i, long t)> top)
         {
-            float hooks = 0;
             string best = null;
             float bestMs = 0;
             for (int i = 0; i < SCount; i++)
             {
-                hooks += s.SelfMs[i];
                 if (s.SelfMs[i] > bestMs)
                 {
                     bestMs = s.SelfMs[i];
                     best = SignalNames[i];
                 }
             }
-            float scripts = Math.Max(0f, s.ScriptMs - hooks - s.ProbeMs);
+            float scripts = Residual(s);
             void Consider(string name, float v)
             {
                 if (v > bestMs)
@@ -851,6 +867,7 @@ namespace FastStartup.Profiling
             bool[] markerSeen = (bool[])_markerSeen.Clone();
             string probe = string.Format(CultureInfo.InvariantCulture, "probe overhead: mean {0:F1} us/frame, max {1:F2} ms over {2} play frames (frame-end bookkeeping + first-seen scans)",
                 _probeFrames > 0 ? _probeTicks * MsPerTick * 1000.0 / _probeFrames : 0, _probeMaxTicks * MsPerTick, _probeFrames);
+            object scripts = ScriptProbe.Snapshot();
             string firstSeen = $"first seen this session: {SeenNetPrefabs.Count} net prefabs, {SeenNamed.Count} locations/rooms, {_sessionNewShaders} shaders, {_sessionNewVariants} shader/keyword combinations";
             void Run()
             {
@@ -864,6 +881,7 @@ namespace FastStartup.Profiling
                     AtomicFile.WriteAllText(Path.Combine(Dir, "spikes.tsv"), Tsv(spikes));
                     AtomicFile.WriteAllText(Path.Combine(Dir, "spike-summary.txt"),
                         Summary(spikes, segs, sessionAcc, calls, self, counterSeen, markerValid, markerSeen, probe, firstSeen));
+                    ScriptProbe.Write(scripts, spikes.Sum(Residual), spikes.Sum(s => s.ScriptMs));
                 }
                 catch (Exception e)
                 {
@@ -909,7 +927,7 @@ namespace FastStartup.Profiling
             {
                 sb.Append('\t').Append(n).Append("_n\t").Append(n).Append("_ms\t").Append(n).Append("_max");
             }
-            sb.Append("\tnewPrefabs\tnewShaders\tnewVariants\tprevNewVariants\tnewShaderNames\tscriptMs\trenderMs\tphysicsMs\tloadingMs\toutsideMs\tprobeMs\ttopSubsystems\n");
+            sb.Append("\tnewPrefabs\tnewShaders\tnewVariants\tprevNewVariants\tnewShaderNames\tscriptMs\trenderMs\tphysicsMs\tloadingMs\toutsideMs\tprobeMs\ttopSubsystems\tscriptTop\n");
             foreach (Spike s in spikes)
             {
                 sb.Append(s.T.ToString("F2", CultureInfo.InvariantCulture)).Append('\t').Append(s.Utc).Append('\t').Append(F(s.Ms)).Append('\t').Append(s.Cause)
@@ -927,7 +945,7 @@ namespace FastStartup.Profiling
                 sb.Append('\t').Append(s.NewPrefabs).Append('\t').Append(s.NewShaders).Append('\t').Append(s.NewVariants).Append('\t').Append(s.PrevNewVariants)
                     .Append('\t').Append(s.NewShaderNames).Append('\t').Append(F(s.ScriptMs)).Append('\t').Append(F(s.RenderMs)).Append('\t').Append(F(s.PhysicsMs))
                     .Append('\t').Append(F(s.LoadingMs)).Append('\t').Append(F(s.OutsideMs)).Append('\t').Append(s.ProbeMs.ToString("F2", CultureInfo.InvariantCulture))
-                    .Append('\t').Append(s.TopSubs).Append('\n');
+                    .Append('\t').Append(s.TopSubs).Append('\t').Append(s.ScriptTop ?? "").Append('\n');
             }
             return sb.ToString();
         }
@@ -953,7 +971,7 @@ namespace FastStartup.Profiling
             var sb = new StringBuilder();
             sb.Append("FastStartup spike probe - ").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)).Append(" - threshold ")
                 .Append(F(_thresholdMs)).Append(" ms - logical cores Environment=").Append(Environment.ProcessorCount).Append(" SystemInfo=")
-                .Append(SystemInfo.processorCount).Append('\n').Append(probe).Append('\n').Append(firstSeen).Append("\n\n");
+                .Append(SystemInfo.processorCount).Append(" JobWorkerCount=").Append(JobsUtility.JobWorkerCount).Append('/').Append(JobsUtility.JobWorkerMaximumCount).Append('\n').Append(probe).Append('\n').Append(firstSeen).Append("\n\n");
             sb.Append("== frame time per segment (play frames, p = upper bound of a 0.5 ms bucket)\n");
             sb.Append(string.Format(CultureInfo.InvariantCulture, "{0,-18} {1,7} {2,7} {3,7} {4,7} {5,7} {6,8} {7,6} {8,9}\n", "segment", "frames", "avg", "p50", "p99", "p99.9", "max", "spikes", "spikeMs"));
             var all = new SegStats { Name = "ALL" };

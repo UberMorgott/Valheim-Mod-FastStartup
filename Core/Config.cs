@@ -51,6 +51,8 @@ namespace FastStartup.Core
 
         public static ConfigEntry<float> SpikeThresholdMs { get; private set; }
 
+        public static ConfigEntry<bool> ScriptBreakdown { get; private set; }
+
         /// <summary>Any [WorldGen] key that needs the WorldGen hooks.</summary>
         public static bool WorldGenAny => ParallelBiomeData.Value || FastLakes.Value || PregenCache.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
 
@@ -146,6 +148,11 @@ namespace FastStartup.Core
             SpikeThresholdMs = file.Bind("Profiler", "SpikeThresholdMs", 33f,
                 new ConfigDescription("SpikeProbe: frames at least this long (ms) are recorded as spikes. Read once at launch.",
                     new AcceptableValueRange<float>(5f, 1000f)));
+            ScriptBreakdown = file.Bind("Profiler", "ScriptBreakdown", false,
+                "With SpikeProbe: time every mod patch method, plugin Update/FixedUpdate/LateUpdate/OnGUI/coroutine/Tick and the game's own " +
+                "per-frame messages (Update/FixedUpdate/LateUpdate/CustomUpdate/UpdateAI), per method and owner, and split the spike frames' " +
+                "script time by them. Installed at the main menu (a few seconds); adds a calibrated, reported cost to every wrapped call. Writes " +
+                "BepInEx\\FastStartup\\script-breakdown.txt and the spikes.tsv column scriptTop. Diagnostic only. Read once at launch.");
         }
     }
 }
