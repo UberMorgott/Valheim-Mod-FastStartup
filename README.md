@@ -5,7 +5,8 @@ BepInEx 5 preloader patcher for Valheim startup speed. Personal build.
 Modules: **startup profiler**, **bundle cache** (replaces Fast AssetBundle Loader), **config save batcher**,
 **localization cache** and **Harmony batching** (these three replace StartupAccelerator and LocalizationCache),
 **mod hotspots** (faster equivalents of slow startup code in other mods' embedded helpers), **world generation**
-(parallel biome map on every world load / connect, faster location placement on new worlds, same output).
+(faster world load / connect: exact lake merge, cached river placement, biome map and sectors built while the main
+scene loads; faster location placement on new worlds; same output).
 Design notes: `E:\DEV\Valheim\docs\designs\startup-accel-analysis.md`.
 
 ValheimPlus overlap: none. ValheimPlus has no startup-speed, bundle-cache, profiling or world-generation speed
@@ -47,8 +48,42 @@ cut Harmony self time 5.4-6.2 s -> 3.2-3.8 s; Merge Localization / LocalizationC
 World load (0.4.0 profiler, `summary-world.txt`): the Almanac postfix on `ObjectDB` took 10.7 s of the world-load
 freeze; fixed upstream in Almanac 3.8.0.2 (17 ms).
 
+World load, click -> first spawn, existing world `AutotestWorld` (single player = server), profiler off, the
+`world load` log line; autotest `-Mod Almanac -Shots 20-hud`, interleaved rounds under one game lock, same mod set
+(2026-10-09, Ryzen 7 9800X3D; "off" = the four new WorldGen keys off, ParallelBiomeData on as in 0.5.0):
+
+| config | world load (s) | freeze (s) | VerifyBiomeData (ms) |
+| --- | --- | --- | --- |
+| off (0.5.0) | 18.98 / 17.53 (third run: Steam init failed) | 5.49 / 4.65 | 1105 / 1052 |
+| + FastLakes | 18.50 / 15.79 / 15.96 | 4.74 / 3.18 / 3.37 | ~1000 |
+| + PregenCache (warm) | 15.39 / 16.75 / 16.20 | 2.66 / 3.33 / 3.23 | ~980 |
+| + PrefetchBiomeData | 14.43 / 14.90 / 15.98 | 2.53 / 2.57 / 3.42 | 388-506 |
+| + PrefetchSectors (all on) | 14.16 / 13.74 / 13.94 | 2.70 / 2.48 / 2.60 | 3 |
+
+Mean 18.26 -> 13.95 s (-4.3 s), freeze 5.07 -> 2.59 s. An earlier batch (other MorgottTweaks build, 2 rounds): off
+19.26 / 18.50, all on 15.35 / 16.40. Inside: `FindLakes` 1.5 s -> 60 ms, pregeneration ~0.66 s -> 0.2 s (cache hit),
+`VerifyBiomeData` 1.1 s (3.5-4 s with ParallelBiomeData off) -> 3 ms on the main thread. Determinism: the
+`WorldGen: state` hashes (sectors, biome map, heights, lakes, rivers, streams, all river points) are equal for true
+vanilla (every WorldGen key off), all on with a cache miss and all on with a cache hit; the state Pregenerate leaves
+(river cache included) is equal on miss and hit; `FastLakes verify: identical`.
+
+Where the rest of the world load goes (profiler, frame probe + Awake/Start probe, same world):
+
+- About 8 s from the first rendered frame to the spawn: vanilla `Game.FindSpawnPoint` (Game.cs:533-561) spawns at a
+  logout point only once `m_respawnWait > m_respawnLoadDuration` (8 s of game time; `Spawned after 8.02` in every
+  run) and the area is ready. The area is ready after ~3-4 s here; the rest of those frames wait for the frame cap
+  (TimeUpdate). Not changed: a vanilla behaviour, not work.
+- Freeze: native scene load + old scene unload ~1.7 s unhooked; `ZNetScene.Awake` / `ObjectDB.Awake` mod postfixes
+  ~1.9 s (Jotunn and its event handlers, ItemDrawers icon atlas 0.4 s once per session, MorgottTweaks AuraVisuals
+  0.15-0.17 s, Warfare collider fix 0.1 s), ConditionalConfigSync 0.16 s on ZNet.Awake.
+- Spawn window: zone and object streaming (`ZNetScene.CreateObjects` under Skidbladnir's Streaming patch,
+  `ZoneSystem.CreateLocalZones` / `SpawnZone`), per-object Awake (StaticPhysics, ZNetView, SlowUpdate, LodFadeInOut).
+
 ## Changes
 
+- Unreleased: world-load module work (FastLakes, PregenCache, PrefetchBiomeData, PrefetchSectors, river cache
+  refresh before parallel builds), `world load` log line with profiler off, profiler frame probe (player-loop phases
+  per frame, click -> spawn), Awake/Start probe (`TimeUnityMessages`), spans inside `ZNet.Awake` / `ZNet.LoadWorld`.
 - 0.5.0: WorldGen module (parallel biome map, early location rejects, loading time budget); spawn-window
   profiling (world generation spans, aggregated spawn-window timing); fix: WorldGen prefix time is attributed to its
   owner instead of untimed mod patches.
@@ -91,7 +126,13 @@ Config `BepInEx\config\FastStartup.cfg`:
 - `[WorldGen] LoadingTimeBudget` (default `0.25`): seconds of location generation per frame while a new world is
   generated (vanilla 0.1; 0 = vanilla).
 - `[WorldGen] DumpLocations` (default `false`): determinism dump at location generation,
-  `BepInEx\FastStartup\diag\locations-<seed>.txt`.
+  `BepInEx\FastStartup\diag\locations-<seed>.txt`; also logs `WorldGen: state ...` hashes at every world load and the
+  FastLakes / PregenCache self-checks (costs ~2 s per load).
+- `[WorldGen] FastLakes` (default `true`): exact grid-based lake merge on every world load / connect.
+- `[WorldGen] PregenCache` (default `true`): river / stream placement cache, `BepInEx\FastStartup\cache\worldgen`.
+- `[WorldGen] PrefetchBiomeData` (default `true`, needs ParallelBiomeData): biome map built while the main scene loads.
+- `[WorldGen] PrefetchSectors` (default `true`, needs PrefetchBiomeData): biome sectors built on the same worker.
+- `[Profiler] TimeUnityMessages` (default `false`): Awake/Start of every game MonoBehaviour per world-load phase.
 
 All keys are read once at launch. With any module on, the log gets `menu ready <s> s after process start` at the
 end of the first `FejdStartup.Start` (profiler off too).
@@ -124,7 +165,41 @@ output; the log always gets `WorldGen: VerifyBiomeData <ms> (GenerateBiomePoints
   configured value. Placement does not depend on where the coroutine yields (the generation RNG state is swapped around
   every yield and every location type reseeds).
 - **DumpLocations**: at `LocationsGenerated` writes `BepInEx\FastStartup\diag\locations-<seed>.txt`: SHA-256 of
-  `PointBiomes` / `PointHeights`, then every location instance sorted by prefab name and zone, position as float bits.
+  `PointBiomes` / `PointHeights`, lakes, rivers, streams, then every location instance sorted by prefab name and zone,
+  position as float bits. At every `VerifyBiomeData` end it logs `WorldGen: state ...`: hashes of the sector graph
+  (every sector's fields, neighbours as indices, each biome's point lists, the per-cell sector index), biome map,
+  heights, lakes, rivers, streams and all `m_riverPoints` entries in enumeration order.
+- **FastLakes**: `WorldGenerator.FindLakes` (WorldGenerator.cs:275, every load / connect, inside `ZNet.Awake` on a
+  server) merges ~8k under-water grid points into lakes with `MergePoints` (:293), which scans the whole remaining
+  list per merge step (`FindClosest`, :316): O(n^2), 1.5 s. The replacement does the same list operations (take index
+  0, swap-remove the merged point) on an array window and finds the same closest point through a grid (cell = range,
+  5x5 cells searched, so nothing outside can be within range even with rounding), same `Vector2 ==` skip, same
+  `Vector2.Distance`, same tie rule (lowest list index wins). Vanilla while another mod patches MergePoints /
+  FindClosest / FindLakes. With DumpLocations the result is compared with a reverse-patched copy of the original on
+  the same input and on 8 synthetic inputs (`FastLakes verify: identical`).
+- **PregenCache**: the rest of `Pregenerate` (WorldGenerator.cs:252: PlaceRivers, PlaceStreams x2, ~0.5 s of random
+  start/end searches) depends only on the seed-derived generator fields. After a vanilla run the lakes, the three
+  river lists, the `Random.state` at each of the three `RenderRivers` calls and the final one-grid river cache are
+  written to `BepInEx\FastStartup\cache\worldgen\pregen-<key>.bin` (~180 KB). A hit assigns the lists and calls the
+  original `RenderRivers` with the recorded states (so `m_riverPoints` is built by vanilla code in vanilla order) and
+  leaves `Random.state` as vanilla does. Key = Unity version + assembly_valheim MVID + every int/float field of the
+  generator at entry, stored in full and compared; payload SHA-256 checked. Off while a foreign patch is on the
+  generator path; 32 files kept (LRU).
+- **PrefetchBiomeData**: on a server the map is first needed in `ZNet.Start` (VerifyBiomeData, ZNet.cs:464), one frame
+  after `WorldGenerator.Initialize` in `ZNet.Awake` (:381). A postfix on Initialize starts the same parallel build on
+  worker threads; VerifyBiomeData takes the result (waiting if needed), so it runs during the rest of the main
+  scene's Awake calls and the native scene load. `world.m_biomeData` is assigned at the vanilla moment. A running
+  prefetch is always finished before the next Initialize (vanilla clears the old generator's river data there
+  without a lock) and before a vanilla fallback. Before any parallel build the generator's one-grid river cache is
+  pointed at the grid's current array: Pregenerate can leave it holding an array a later `RenderRivers` replaced
+  (:344-347 then :559-568), which a parallel worker could hit where the sequential build would have evicted it.
+- **PrefetchSectors**: the pure part of `GenerateSectors` (AltBiomeWorldData.cs:150-256: flood fill, edges,
+  neighbours, bounds, zones, heights) runs on the prefetch worker on the unpublished data; the rest (:257-296:
+  `SectorsCalculated`, discovered flags from `ZoneSystem.IsZoneLoaded`, distances, `GenerateAltBiomes` with
+  `UnityEngine.Random`) stays on the main thread at the vanilla moment through a prefix that applies only to that
+  object. Off while a foreign patch is on VerifyBiomeData, GenerateBiomePoints, GenerateSectors, tryFill, the
+  BiomeSector / BiomeTypeInfo constructors or ZoneSystem.GetZone. The generator-path guard of every WorldGen feature
+  also covers `Utils.LerpStep` / `Utils.FloorToInt`.
 
 Measured on the lab dedicated server (Ryzen 7 9800X3D, 16 threads; the pack's 35 server plugins, 197 location types
 incl. modded, ~12.8k instances; 3 new worlds x 2 runs each, every run a fresh generation from the same `.fwl`):
@@ -384,6 +459,21 @@ What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per
   (with `TimeModPatches` also per mod patch method), written as one span per method on the "spawn window totals" lane
   and in the "Spawn window" summary section; the three one-shot calls also get a span each. After the first spawn
   the hooks only push/pop a stack entry.
+
+- With `TimeSpawnWindow`, frame probe: marker systems at the start of every top-level Unity player-loop phase
+  (Initialization, TimeUpdate, EarlyUpdate, FixedUpdate, PreUpdate, Update, PreLateUpdate, PostLateUpdate) and at the
+  end of PostLateUpdate split every frame from the world-start click to the first spawn. "frames" lane (one span per
+  frame, detail = ms per phase + gen0 GC count) and a "Frames" summary section: per world-load phase (before the
+  scene request / freeze / scene loaded -> first frame / first frame -> spawn) frames, ms, hooked vs unhooked ms and ms
+  per player-loop phase; the 25 longest frames with the hooked top-level spans inside them. TimeUpdate is where Unity
+  waits for the frame cap / vsync, EarlyUpdate is where a sync scene load runs.
+- `[Profiler] TimeUnityMessages`: every Awake/Start of assembly_valheim's MonoBehaviours (~330 methods), calls / self /
+  inclusive ms per method and world-load phase, as a summary section. It slows every object created before the spawn
+  (ZNetView, StaticPhysics, Piece ... thousands of Awake calls), so the spawn window is inflated while it is on.
+- Spans inside `ZNet.Awake` (SteamManager / ZSteamMatchmaking / ZPlayFabMatchmaking.Initialize, WorldGenerator.Initialize,
+  FindLakes, PlaceRivers, PlaceStreams, RenderRivers) and `ZNet.LoadWorld` (`ZDOMan.LoadChunks`).
+- Profiler off too (any module on): the log gets `world load <s> s (click -> first spawn): click -> LoadMainScene end,
+  freeze (-> main scene loaded), -> spawn` once per session.
 
 Limits: plugin work in Unity `Start()`/coroutines after `Awake` is not attributed to the plugin. Native Unity
 work between hooked calls shows up as the gap between menu-ready time and the hooked total.
