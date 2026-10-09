@@ -321,7 +321,8 @@ launch, which happens while the `start` scene loads.
 ## Mod patches by owner
 
 `[Profiler] TimeModPatches = true` patches each prefix/postfix/finalizer that another mod put on the profiled game
-methods and reports them per owner in `summary.txt`. Hooking forces Mono to compile those methods early; for some
+methods and reports them per owner in `summary.txt`; FastStartup's own WorldGen prefixes too (owner
+`morgott.faststartup.worldgen`: they replace vanilla bodies such as `GenerateBiomePoints`). Hooking forces Mono to compile those methods early; for some
 methods (the ItemManager/PieceManager helpers in Warfare, Armory, Wizardry) that native compile crashes the game.
 The method being hooked is written to `BepInEx\FastStartup\patch-probe.pending` first, and after a crash the next
 launch moves it to `patch-probe.skip` and never hooks it again (5 launches to settle here). This covers the

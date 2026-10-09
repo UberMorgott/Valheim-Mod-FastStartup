@@ -27,7 +27,7 @@ namespace FastStartup
         private const string ConfigSaveHarmonyId = "morgott.faststartup.configsave";
         private const string HarmonyBatchHarmonyId = "morgott.faststartup.harmonybatch";
         private const string ModHotspotsHarmonyId = "morgott.faststartup.modhotspots";
-        private const string WorldGenHarmonyId = "morgott.faststartup.worldgen";
+        public const string WorldGenHarmonyId = "morgott.faststartup.worldgen";
 
         public static IEnumerable<string> TargetDLLs { get; } = new string[0];
 

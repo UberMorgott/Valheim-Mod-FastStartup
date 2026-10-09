@@ -109,7 +109,11 @@ namespace FastStartup.Profiling
                 }
                 foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers))
                 {
-                    if (!patch.owner.StartsWith("morgott.faststartup", StringComparison.Ordinal) &&
+                    // FastStartup's own patches stay unwrapped, except WorldGen: its prefixes replace vanilla bodies
+                    // (parallel GenerateBiomePoints), so without a name their time read as "untimed mod patches".
+                    bool own = patch.owner.StartsWith("morgott.faststartup", StringComparison.Ordinal) &&
+                               patch.owner != FastStartupPatcher.WorldGenHarmonyId;
+                    if (!own &&
                         Wrap(harmony, patch.PatchMethod, patch.owner, target.DeclaringType?.Name + "." + target.Name, pendingPath, skip))
                     {
                         wrapped++;
