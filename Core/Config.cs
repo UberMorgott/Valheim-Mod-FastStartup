@@ -47,6 +47,10 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> ProfilerTimeUnityMessages { get; private set; }
 
+        public static ConfigEntry<bool> SpikeProbe { get; private set; }
+
+        public static ConfigEntry<float> SpikeThresholdMs { get; private set; }
+
         /// <summary>Any [WorldGen] key that needs the WorldGen hooks.</summary>
         public static bool WorldGenAny => ParallelBiomeData.Value || FastLakes.Value || PregenCache.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
 
@@ -133,6 +137,15 @@ namespace FastStartup.Core
                 "With [Profiler] Enabled: time every Awake/Start of the game's MonoBehaviours during the world load, per method and " +
                 "load phase (freeze, scene loaded -> first frame, first frame -> spawn). Adds overhead to every object created " +
                 "before the spawn, so the spawn-window numbers are inflated while it is on. Read once at launch.");
+            SpikeProbe = file.Bind("Profiler", "SpikeProbe", false,
+                "Record in-play frame times and, for every frame over SpikeThresholdMs, what ran in it: time per Unity player-loop " +
+                "subsystem, object creation / zone / location / dungeon room / terrain / asset bundle / texture upload calls, GC " +
+                "collections, release-player render and memory counters, first-seen shaders, player state. Writes " +
+                "BepInEx\\FastStartup\\spikes.tsv and spike-summary.txt (every 30 s in play and at quit). Independent of Enabled. " +
+                "Diagnostic only, off for normal play. Read once at launch.");
+            SpikeThresholdMs = file.Bind("Profiler", "SpikeThresholdMs", 33f,
+                new ConfigDescription("SpikeProbe: frames at least this long (ms) are recorded as spikes. Read once at launch.",
+                    new AcceptableValueRange<float>(5f, 1000f)));
         }
     }
 }

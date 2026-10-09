@@ -63,9 +63,16 @@ namespace FastStartup
                 bool hotspots = Config.ShaderReplacerFixEnabled?.Value == true;
                 bool hotspotsDump = Config.DumpModHotspots?.Value == true;
                 bool worldGen = Config.ParallelBiomeData != null && Config.WorldGenAny;
-                if (bundles || configSave || harmonyBatching || localization || dump || hotspots || hotspotsDump || worldGen)
+                bool spikes = Config.SpikeProbe?.Value == true;
+                if (bundles || configSave || harmonyBatching || localization || dump || hotspots || hotspotsDump || worldGen || spikes)
                 {
                     Lifecycle.Install(new Harmony(LifecycleHarmonyId));
+                }
+                if (spikes)
+                {
+                    // Game and Unity types: only once the engine is up.
+                    Lifecycle.ChainloaderInitialized += () =>
+                        Log.Guard("SpikeProbe install", () => SpikeProbe.Install(new Harmony(SpikeProbe.HarmonyId)));
                 }
                 if (configSave)
                 {
