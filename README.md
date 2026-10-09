@@ -479,6 +479,54 @@ What it measures (monotonic `Stopwatch` spans kept in memory, nothing logged per
 Limits: plugin work in Unity `Start()`/coroutines after `Awake` is not attributed to the plugin. Native Unity
 work between hooked calls shows up as the gap between menu-ready time and the hooked total.
 
+## Spike probe (in-play hitches)
+
+`[Profiler] SpikeProbe = true` (independent of `Enabled`; `SpikeThresholdMs`, default 33) records every play frame
+(local player exists) and, for each frame at or over the threshold, what ran in it. Release-player signals only:
+
+- Frame split: at the main menu a marker system goes before every top-level player-loop entry and every subsystem
+  (149 markers in 1.0.17), so a spike frame names its slowest subsystems (`Update.ScriptRunBehaviourUpdate`,
+  `PostLateUpdate.FinishFrameRendering`, `FixedUpdate.PhysicsFixedUpdate`, `TimeUpdate.WaitForLastPresentation...`).
+- Hooks (prefix First + finalizer Last, observer, self time = nested hooked calls subtracted): `ZNetScene.CreateObject`,
+  `ZoneSystem.SpawnZone/SpawnLocation`, `DungeonGenerator.PlaceRoom`, `Heightmap.Regenerate/RebuildRenderMesh/
+  RebuildCollisionMesh/ForceGenerateAll`, AssetBundle sync loads, `Texture2D.Apply`; count, ms and the slowest call's
+  prefab / zone / location / room name.
+- First seen: the first instance of each net prefab, location and room is scanned once (each material once) for shaders
+  and (shader, keywords, instancing, renderer kind) combinations new to the session: shader-compile candidates.
+- ProfilerRecorder counters marked "available in release players" in the Unity 6000.0 profiler counters reference:
+  GC Used / GC Reserved / Total Used / System Used Memory, SetPass Calls, Draw Calls, Batches, Vertex/Index Buffer Upload
+  In Frame Bytes, Render Textures Changes, Shadow Casters, Visible Skinned Meshes. `GC.CollectionCount` per generation.
+  Profiler markers (`GC.Collect`, `Shader.CreateGPUProgram`, `Loading.ReadObject` ...) do not exist in a release player
+  (the summary lists them valid/nonzero; `profiler-available.txt` = all 44 metrics `ProfilerRecorderHandle.GetAvailable`
+  returns), and Frame Timing Stats (CPU/GPU frame time) is off in Valheim's build.
+- Player state on spike frames: segment label (`SpikeProbe.Segment`, set by a test driver), teleporting, interior,
+  zone changed in the last second, speed, creatures within 30 m, combat timer.
+
+Output `BepInEx\FastStartup\spikes.tsv` (one row per spike) and `spike-summary.txt` (frame time per segment, causes
+ranked by total ms with owner, hook totals, first-seen correlation, session time per subsystem, top 40 spikes), every 30 s
+in play (worker thread) and at quit. Cause = the largest of: a hook's self time, script time not in a hook (`scripts`,
+`scripts+gc` with a collection), render (PostLateUpdate), physics, async load integration, present wait; `+newVariants`
+when the frame or the one before had first-seen shader combinations. Overhead: 5.6 us per frame mean.
+
+Measured 2026-10-09 with the autotest route `99s-spike-tour` (tools repo a950ff9: idle, 90 s run into new zones, portal
+home, the same path again, Crypt3 dungeon, 6 Greydwarfs, 30 pieces, 150 s idle), full modpack, RTX 5070 Ti, 2 runs per
+profile; 4 / 2 cores = `autotest.ps1 -Affinity N` (Unity and Mono still report 16 cores, so Unity keeps its 16-core
+job-worker pool: the 2-core profile is harsher than a real 2-core PC). Per run, spikes >= 33 ms:
+
+| profile | spikes | spike ms | run-new | run-repeat | idle (150 s) | top causes (ms per run) |
+|---|---|---|---|---|---|---|
+| 16 cores | 150 | 11 308 | 69 / 3 742 | 13 / 644 | 0 | create 2 837, scripts 2 517, spawn-frame GC 2 353, zone 1 651 |
+| 4 cores | 164 | 11 769 | 27 / 1 371 | 13 / 631 | 22 / 1 096 | create 3 730, scripts 2 976, spawn-frame GC 1 885, render 1 870 |
+| 2 cores | 1 438 | 105 995 | 243 / 22 926 | 214 / 14 731 | 307 / 16 155 | render 55 154, scripts 21 328, physics 8 390, create 4 949 |
+
+- Shader compiles are not the hitch source: frames with first-seen shader combinations (in the frame or the one
+  before) are 13 of 301 spikes / 4 % of spike ms on 16 cores, 3 % on 4, 1 % on 2, and none of them is render- or
+  present-bound; the run-new -> run-repeat drop (3 742 -> 644 ms) is zone / location / room generation, not render.
+- The first play frame after every spawn costs 1.6-4.0 s (2 full GCs, all `Start()` calls).
+- On 2 cores `PostLateUpdate.FinishFrameRendering` (render thread / job workers starved) and physics dominate even idle.
+- WorldGen on 2 cores (2 runs each): world load on 20.0 / 21.4 s, off 31.6 / 27.2 s; freeze on 7.3 / 8.7 s, off 13.2 /
+  8.3 s. The worker threads do not starve the main thread, so no core-count cap.
+
 ## Build
 
 ```powershell
