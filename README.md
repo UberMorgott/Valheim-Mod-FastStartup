@@ -81,6 +81,9 @@ Where the rest of the world load goes (profiler, frame probe + Awake/Start probe
 
 ## Changes
 
+- 0.6.1: SpikeProbe diagnostic (`[Profiler] SpikeProbe`, off by default): per-frame spike attribution in play
+  (player-loop subsystem split, world-streaming/terrain/bundle/texture hooks, first-seen shader variants, release
+  player counters and player state), written to `spikes.tsv` + `spike-summary.txt`.
 - 0.6.0: world-load module work (FastLakes, PregenCache, PrefetchBiomeData, PrefetchSectors, river cache
   refresh before parallel builds), `world load` log line with profiler off, profiler frame probe (player-loop phases
   per frame, click -> spawn), Awake/Start probe (`TimeUnityMessages`), spans inside `ZNet.Awake` / `ZNet.LoadWorld`.
