@@ -5,7 +5,7 @@
     <AssemblyName>FastStartup</AssemblyName>
     <RootNamespace>FastStartup</RootNamespace>
     <Product>FastStartup</Product>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

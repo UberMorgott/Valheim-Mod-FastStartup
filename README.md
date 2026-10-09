@@ -49,6 +49,9 @@ freeze; fixed upstream in Almanac 3.8.0.2 (17 ms).
 
 ## Changes
 
+- 0.5.0: WorldGen module (parallel biome map, early location rejects, loading time budget); spawn-window
+  profiling (world generation spans, aggregated spawn-window timing); fix: WorldGen prefix time is attributed to its
+  owner instead of untimed mod patches.
 - 0.4.0: world-load profiling lane (recording to the first player spawn, world-load wall clock, top sinks named
   per owner), per-owner timing of world-load targets, Jotunn event-handler probe; fix for the Mono crash when the
   patch owner probe hooked bundled ItemManager/PieceManager helper libraries.
