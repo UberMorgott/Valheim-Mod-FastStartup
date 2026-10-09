@@ -37,6 +37,8 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> DumpLocations { get; private set; }
 
+        public static ConfigEntry<bool> ProfilerTimeUnityMessages { get; private set; }
+
         /// <summary>Any [WorldGen] key that needs the WorldGen hooks.</summary>
         public static bool WorldGenAny => ParallelBiomeData.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
 
@@ -102,6 +104,10 @@ namespace FastStartup.Core
                 "Diagnostic: when locations are generated (or a world with generated locations loads) write every location " +
                 "instance (prefab, zone, position as float bits) and the SHA-256 of the biome/height map to " +
                 "BepInEx\\FastStartup\\diag\\locations-<seed>.txt, for diffing WorldGen off against on. Also logs world-gen timings.");
+            ProfilerTimeUnityMessages = file.Bind("Profiler", "TimeUnityMessages", false,
+                "With [Profiler] Enabled: time every Awake/Start of the game's MonoBehaviours during the world load, per method and " +
+                "load phase (freeze, scene loaded -> first frame, first frame -> spawn). Adds overhead to every object created " +
+                "before the spawn, so the spawn-window numbers are inflated while it is on. Read once at launch.");
         }
     }
 }

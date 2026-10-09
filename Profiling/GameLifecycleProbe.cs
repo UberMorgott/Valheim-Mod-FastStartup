@@ -97,7 +97,32 @@ namespace FastStartup.Profiling
             AccessTools.DeclaredMethod(typeof(ZoneSystem), "SpawnLocation"),                                     // ZoneSystem.cs:2391
             AccessTools.DeclaredMethod(typeof(DungeonGenerator), nameof(DungeonGenerator.Generate),
                 new[] { typeof(int), typeof(ZoneSystem.SpawnMode) }),                                            // DungeonGenerator.cs:193
+            // Inside ZNet.Awake (ZNet.cs:333-395): platform init and the world generator (rivers / streams pregeneration,
+            // WorldGenerator.cs:187-258) on a server; inside ZNet.LoadWorld (ZNet.cs:1949-1994): the ZDO chunks.
+            AccessTools.DeclaredMethod(typeof(SteamManager), nameof(SteamManager.Initialize)),                   // SteamManager.cs:39
+            AccessTools.DeclaredMethod(typeof(ZSteamMatchmaking), nameof(ZSteamMatchmaking.Initialize)),
+            AccessTools.DeclaredMethod(typeof(ZPlayFabMatchmaking), nameof(ZPlayFabMatchmaking.Initialize)),     // ZPlayFabMatchmaking.cs:139
+            AccessTools.DeclaredMethod(typeof(WorldGenerator), nameof(WorldGenerator.Initialize)),               // WorldGenerator.cs:187
+            AccessTools.DeclaredMethod(typeof(WorldGenerator), "FindLakes"),                                     // WorldGenerator.cs:275
+            AccessTools.DeclaredMethod(typeof(WorldGenerator), "PlaceRivers"),                                   // WorldGenerator.cs:409
+            AccessTools.DeclaredMethod(typeof(WorldGenerator), "PlaceStreams"),                                  // WorldGenerator.cs:335
+            AccessTools.DeclaredMethod(typeof(WorldGenerator), "RenderRivers"),                                  // WorldGenerator.cs:531
+            AccessTools.DeclaredMethod(typeof(ZDOMan), nameof(ZDOMan.LoadChunks)),                               // ZDOMan.cs:463
         };
+
+        /// <summary>World-load phase on the main thread: 0 before the main scene request, 1 = freeze (LoadMainScene end ->
+        /// main scene loaded), 2 = main scene loaded -> first rendered frame, 3 = first frame -> first spawn, 4 = after.</summary>
+        public static int WorldPhase { get; private set; }
+
+        public static readonly string[] WorldPhaseNames =
+        {
+            "before the main scene request", "freeze (LoadMainScene end -> main scene loaded)",
+            "main scene loaded -> first rendered frame", "first rendered frame -> first spawn", "after the first spawn",
+        };
+
+        /// <summary>Raised once, on the main thread, at the end of the OnWorldStart that leads to LoadMainScene (the click) or at
+        /// LoadMainScene end, whichever comes first.</summary>
+        public static event Action WorldLoadStarted;
 
         public static void Install(Harmony harmony)
         {
@@ -174,9 +199,15 @@ namespace FastStartup.Profiling
             {
                 // OnWorldStart may return early (cloud warning, popups): the last one before LoadMainScene wins.
                 _click = start;
+                RaiseWorldLoadStarted();
             }
             else if (original.DeclaringType == typeof(FejdStartup) && original.Name == "LoadMainScene")
             {
+                RaiseWorldLoadStarted();
+                if (WorldPhase == 0)
+                {
+                    WorldPhase = 1;
+                }
                 StartupTrace.Mark(WorldLoadMark);
                 _sceneRequest = StartupTrace.Now();
                 _loadMainStart = start;
@@ -194,10 +225,25 @@ namespace FastStartup.Profiling
             else if (!_worldReady && !failed && original.DeclaringType == typeof(Game) && original.Name == "SpawnPlayer")
             {
                 _worldReady = true;
+                WorldPhase = 4;
                 Log.Guard("Spawn window close", SpawnWindowProbe.Close);
+                Log.Guard("Frame probe close", FrameProbe.Close);
+                Log.Guard("Unity message probe close", UnityMessageProbe.Close);
                 StartupTrace.Mark(WorldReadyMark);
                 Log.Guard("WorldReady handlers", () => WorldReady?.Invoke());
             }
+        }
+
+        private static bool _worldLoadStarted;
+
+        private static void RaiseWorldLoadStarted()
+        {
+            if (_worldLoadStarted)
+            {
+                return;
+            }
+            _worldLoadStarted = true;
+            Log.Guard("WorldLoadStarted handlers", () => WorldLoadStarted?.Invoke());
         }
 
         private static void SceneLoaderStartPrefix()
@@ -218,6 +264,10 @@ namespace FastStartup.Profiling
                 // Sync LoadScene: every Awake of the new scene ran before sceneLoaded; Start/Update/render follow.
                 _awaitMainScene = false;
                 _mainLoaded = StartupTrace.Now();
+                if (WorldPhase == 1)
+                {
+                    WorldPhase = 2;
+                }
                 StartupTrace.Mark(MainSceneLoadedMark, scene.name);
                 StartEndOfFrame((MonoBehaviour)Game.instance ?? ZNet.instance, FirstFrameRendered);
             }
@@ -260,6 +310,10 @@ namespace FastStartup.Profiling
         private static void FirstFrameRendered()
         {
             _firstFrame = StartupTrace.Now();
+            if (WorldPhase == 2)
+            {
+                WorldPhase = 3;
+            }
             StartupTrace.Mark(FirstFrameMark);
             EmitWorldLoadSpans();
         }

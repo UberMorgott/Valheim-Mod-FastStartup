@@ -59,6 +59,11 @@ namespace FastStartup.Profiling
             if (Config.ProfilerTimeSpawnWindow.Value)
             {
                 Log.Guard("Spawn window probe install", () => SpawnWindowProbe.Install(_harmony));
+                Log.Guard("Frame probe install", FrameProbe.Install);
+            }
+            if (Config.ProfilerTimeUnityMessages.Value)
+            {
+                Log.Guard("Unity message probe install", () => UnityMessageProbe.Install(_harmony));
             }
             GameLifecycleProbe.MenuReady += OnMenuReady;
             GameLifecycleProbe.WorldReady += OnWorldReady;

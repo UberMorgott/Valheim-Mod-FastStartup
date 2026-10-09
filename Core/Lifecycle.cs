@@ -38,6 +38,7 @@ namespace FastStartup.Core
                 finalizer: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(StartFinalizer)), Priority.Last)));
             Log.Guard("FejdStartup.Start hook", () => _harmony.Patch(AccessTools.DeclaredMethod(typeof(FejdStartup), "Start"),
                 postfix: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(FejdStartupPostfix)))));
+            Log.Guard("World load timing hooks", InstallWorldLoadTiming);
             Log.Guard("ChainloaderInitialized handlers", () => ChainloaderInitialized?.Invoke());
         }
 
@@ -59,5 +60,66 @@ namespace FastStartup.Core
                     (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalSeconds)));
             Log.Guard("MenuReady handlers", () => MenuReady?.Invoke());
         }
+
+        // World-load wall clock, profiler off too (main thread): click = last FejdStartup.OnWorldStart start before
+        // LoadMainScene (FejdStartup.cs:1635), LoadMainScene end (:2957, sync scene load request), main scene loaded
+        // (SceneManager.sceneLoaded: every main-scene Awake done), end of the first Game.SpawnPlayer (Game.cs:484).
+        private static long _click;
+        private static long _loadMainEnd;
+        private static long _mainLoaded;
+        private static bool _awaitMain;
+        private static bool _spawned;
+
+        private static void InstallWorldLoadTiming()
+        {
+            _harmony.Patch(AccessTools.DeclaredMethod(typeof(FejdStartup), "OnWorldStart"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(OnWorldStartPrefix)), Priority.First));
+            _harmony.Patch(AccessTools.DeclaredMethod(typeof(FejdStartup), "LoadMainScene"),
+                finalizer: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(LoadMainSceneFinalizer)), Priority.Last));
+            _harmony.Patch(AccessTools.DeclaredMethod(typeof(Game), "SpawnPlayer"),
+                finalizer: new HarmonyMethod(AccessTools.Method(typeof(Lifecycle), nameof(SpawnPlayerFinalizer)), Priority.Last));
+            UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, mode) =>
+            {
+                if (_awaitMain)
+                {
+                    _awaitMain = false;
+                    _mainLoaded = Stopwatch.GetTimestamp();
+                }
+            };
+        }
+
+        private static void OnWorldStartPrefix()
+        {
+            if (_loadMainEnd == 0)
+            {
+                _click = Stopwatch.GetTimestamp();
+            }
+        }
+
+        private static void LoadMainSceneFinalizer()
+        {
+            if (_loadMainEnd == 0)
+            {
+                _loadMainEnd = Stopwatch.GetTimestamp();
+                _awaitMain = true;
+            }
+        }
+
+        private static void SpawnPlayerFinalizer(Exception __exception)
+        {
+            if (_spawned || __exception != null || _loadMainEnd == 0)
+            {
+                return;
+            }
+            _spawned = true;
+            long now = Stopwatch.GetTimestamp();
+            long click = _click != 0 ? _click : _loadMainEnd;
+            Log.Info(string.Format(CultureInfo.InvariantCulture,
+                "world load {0:F2} s (click -> first spawn): click -> LoadMainScene end {1:F2} s, freeze (-> main scene loaded) {2:F2} s, -> spawn {3:F2} s",
+                Sec(click, now), Sec(click, _loadMainEnd), _mainLoaded != 0 ? Sec(_loadMainEnd, _mainLoaded) : -1,
+                _mainLoaded != 0 ? Sec(_mainLoaded, now) : -1));
+        }
+
+        private static double Sec(long from, long to) => (to - from) / (double)Stopwatch.Frequency;
     }
 }
