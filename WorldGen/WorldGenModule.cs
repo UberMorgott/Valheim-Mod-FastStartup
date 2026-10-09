@@ -30,7 +30,16 @@ namespace FastStartup.WorldGen
             _dump = Config.DumpLocations.Value;
             if (parallel)
             {
-                Log.Guard("ParallelBiomeData install", () => ParallelBiomeData.Install(harmony));
+                Log.Guard("ParallelBiomeData install", () => ParallelBiomeData.Install(harmony, Config.PrefetchBiomeData.Value, Config.PrefetchSectors.Value));
+            }
+            if (Config.PregenCache.Value)
+            {
+                PregenCache.Verify = _dump;
+                Log.Guard("PregenCache install", () => PregenCache.Install(harmony));
+            }
+            if (Config.FastLakes.Value)
+            {
+                Log.Guard("FastLakes install", () => FastLakes.Install(harmony, _dump));
             }
             if (early || profiler)
             {
@@ -41,7 +50,7 @@ namespace FastStartup.WorldGen
                 Log.Guard("LoadingTimeBudget install", () => LoadingTimeBudget.Install(harmony, budget));
             }
             Log.Guard("WorldGen timing hooks install", () => InstallTiming(harmony));
-            Log.Info($"WorldGen: ParallelBiomeData={parallel}, EarlyReject={early}, LoadingTimeBudget={budget.ToString(CultureInfo.InvariantCulture)}, DumpLocations={_dump}");
+            Log.Info($"WorldGen: ParallelBiomeData={parallel}, PrefetchBiomeData={parallel && Config.PrefetchBiomeData.Value}, FastLakes={Config.FastLakes.Value}, PregenCache={Config.PregenCache.Value}, PrefetchSectors={parallel && Config.PrefetchBiomeData.Value && Config.PrefetchSectors.Value}, EarlyReject={early}, LoadingTimeBudget={budget.ToString(CultureInfo.InvariantCulture)}, DumpLocations={_dump}");
         }
 
         private static void InstallTiming(Harmony harmony)
@@ -85,8 +94,12 @@ namespace FastStartup.WorldGen
             long total = Stopwatch.GetTimestamp() - _verifyStart;
             _verifyStart = 0;
             Log.Info(string.Format(CultureInfo.InvariantCulture,
-                "WorldGen: VerifyBiomeData {0:F0} ms (GenerateBiomePoints {1:F0} ms {2}, GenerateSectors {3:F0} ms) world '{4}'",
-                Ms(total), Ms(_pointsTicks), ParallelBiomeData.LastParallel ? "parallel" : "vanilla", Ms(_sectorsTicks), world?.m_name));
+                "WorldGen: VerifyBiomeData {0:F0} ms (GenerateBiomePoints {1:F0} ms {2}, GenerateSectors {3:F0} ms{6}) world '{4}', pregeneration {5}",
+                Ms(total), Ms(_pointsTicks), ParallelBiomeData.LastParallel ? (ParallelBiomeData.LastPrefetched ? "prefetched" : "parallel") : "vanilla", Ms(_sectorsTicks), world?.m_name, PregenCache.LastResult.Length > 0 ? PregenCache.LastResult : "not cached", PrefetchedSectors.LastUsed ? " prefetched" : ""));
+            if (_dump)
+            {
+                Log.Guard("WorldGen state hashes", () => Log.Info("WorldGen: state " + LocationsDump.StateHashes(world)));
+            }
         }
 
         private static void PointsPrefix() => _pointsStart = Stopwatch.GetTimestamp();

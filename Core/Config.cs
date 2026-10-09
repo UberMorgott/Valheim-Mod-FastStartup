@@ -37,10 +37,18 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> DumpLocations { get; private set; }
 
+        public static ConfigEntry<bool> FastLakes { get; private set; }
+
+        public static ConfigEntry<bool> PregenCache { get; private set; }
+
+        public static ConfigEntry<bool> PrefetchBiomeData { get; private set; }
+
+        public static ConfigEntry<bool> PrefetchSectors { get; private set; }
+
         public static ConfigEntry<bool> ProfilerTimeUnityMessages { get; private set; }
 
         /// <summary>Any [WorldGen] key that needs the WorldGen hooks.</summary>
-        public static bool WorldGenAny => ParallelBiomeData.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
+        public static bool WorldGenAny => ParallelBiomeData.Value || FastLakes.Value || PregenCache.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
 
         public static void Load()
         {
@@ -103,7 +111,24 @@ namespace FastStartup.Core
             DumpLocations = file.Bind("WorldGen", "DumpLocations", false,
                 "Diagnostic: when locations are generated (or a world with generated locations loads) write every location " +
                 "instance (prefab, zone, position as float bits) and the SHA-256 of the biome/height map to " +
-                "BepInEx\\FastStartup\\diag\\locations-<seed>.txt, for diffing WorldGen off against on. Also logs world-gen timings.");
+                "BepInEx\\FastStartup\\diag\\locations-<seed>.txt, for diffing WorldGen off against on. Also logs world-gen timings, " +
+                "and compares FastLakes against the original lake merge (costs its 1-2 s once per world load).");
+            FastLakes = file.Bind("WorldGen", "FastLakes", true,
+                "Merge the lake candidates of every world load and connect (WorldGenerator.MergePoints, 1-2 s on the main thread) " +
+                "through a spatial grid instead of a full scan per merge step. Same lakes, bit for bit (same list order, distances " +
+                "and tie rule). Falls back to vanilla while another mod patches the lake search. Read once at launch.");
+            PregenCache = file.Bind("WorldGen", "PregenCache", true,
+                "Keep the world generator's river and stream placement of each world (lakes, rivers, streams and the random state " +
+                "of their rasterisation, a few hundred KB) in BepInEx\\FastStartup\\cache\\worldgen and rebuild the river data from " +
+                "it on the next load / connect instead of searching again. Keyed by game build, Unity version and the generator's " +
+                "seed-derived inputs; off while another mod patches the world generator. Read once at launch.");
+            PrefetchBiomeData = file.Bind("WorldGen", "PrefetchBiomeData", true,
+                "With ParallelBiomeData: start the biome/height map build on worker threads as soon as the world generator exists " +
+                "(ZNet.Awake) instead of in ZNet.Start, so it runs while the rest of the main scene loads. Same map. Read once at launch.");
+            PrefetchSectors = file.Bind("WorldGen", "PrefetchSectors", true,
+                "With PrefetchBiomeData: also build the biome sectors (flood fill of the map into regions, their edges and " +
+                "neighbours) on the prefetch worker; the main-thread part (discovered flags, alt biomes) still runs at the vanilla " +
+                "moment. Same sectors. Read once at launch.");
             ProfilerTimeUnityMessages = file.Bind("Profiler", "TimeUnityMessages", false,
                 "With [Profiler] Enabled: time every Awake/Start of the game's MonoBehaviours during the world load, per method and " +
                 "load phase (freeze, scene loaded -> first frame, first frame -> spawn). Adds overhead to every object created " +
