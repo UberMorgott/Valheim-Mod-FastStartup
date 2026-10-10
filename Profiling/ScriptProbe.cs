@@ -75,6 +75,7 @@ namespace FastStartup.Profiling
         private static readonly List<int> Touched = new List<int>(1024);
         private static readonly long[] StackStart = new long[256];
         private static readonly long[] StackChild = new long[256];
+        private static readonly int[] StackHookDepth = new int[256];
         private static int _depth;
         private static int _mainThread;
         private static bool _on;
@@ -92,9 +93,11 @@ namespace FastStartup.Profiling
         internal static bool On => _on;
 
         /// <summary>A SpikeProbe hook call that just ended inside a wrapped call: its time is not the caller's self time.</summary>
-        internal static void AddChild(long ticks)
+        /// <param name="hookDepth">SpikeProbe's hook depth after that call ended: only a hook directly inside the innermost wrapped
+        /// call counts (its nested hooks are already inside its total).</param>
+        internal static void AddChild(long ticks, int hookDepth)
         {
-            if (_on && _depth > 0)
+            if (_on && _depth > 0 && StackHookDepth[_depth - 1] == hookDepth)
             {
                 StackChild[_depth - 1] += ticks;
             }
@@ -347,6 +350,7 @@ namespace FastStartup.Profiling
             __state = Stopwatch.GetTimestamp();
             StackStart[_depth] = __state;
             StackChild[_depth] = 0;
+            StackHookDepth[_depth] = SpikeProbe.HookDepth;
             _depth++;
         }
 

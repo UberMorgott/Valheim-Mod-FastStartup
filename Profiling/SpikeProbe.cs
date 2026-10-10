@@ -253,6 +253,8 @@ namespace FastStartup.Profiling
         /// <summary>A hooked call is running (ScriptProbe keeps time spent inside hooks apart).</summary>
         internal static bool InHook => _depth > 0;
 
+        internal static int HookDepth => _depth;
+
         // ---- hooks ----
 
         private static void Pre(out long __state)
@@ -276,8 +278,8 @@ namespace FastStartup.Profiling
                 return -1;
             }
             long total = Stopwatch.GetTimestamp() - state;
-            ScriptProbe.AddChild(total);
             _depth--;
+            ScriptProbe.AddChild(total, _depth);
             long self = total - StackChild[_depth];
             if (_depth > 0)
             {
