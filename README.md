@@ -530,6 +530,61 @@ job-worker pool: the 2-core profile is harsher than a real 2-core PC). Per run, 
 - WorldGen on 2 cores (2 runs each): world load on 20.0 / 21.4 s, off 31.6 / 27.2 s; freeze on 7.3 / 8.7 s, off 13.2 /
   8.3 s. The worker threads do not starve the main thread, so no core-count cap.
 
+Weak-PC emulation that Unity also sees (2026-10-10, tools 457bbdc): `autotest.ps1 -Affinity N -GameArgs:'-job-worker-count M'`.
+`-job-worker-count` is a standalone-player argument (Unity 6000.0 `JobsUtility.JobWorkerMaximumCount` reference: "the
+command line argument `-job-worker-count value` for the Editor or standalone Players"); SpikeProbe logs
+`JobWorkerCount=1/1` with it (15/15 without). Mono / `SystemInfo` still report 16 cores. Skidbladnir 0.5.0 (the earlier
+table: 0.4.3). Per run, spikes >= 33 ms:
+
+| profile | runs | spikes | spike ms | run-new | run-repeat | idle | p99 ms | top causes (ms per run) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 16 cores, Skidbladnir 0.5.0 | 1 | 93 | 7 921 | 11 / 525 | 12 / 593 | 0 | 8.5 | create 3 446, scripts 2 134, scripts+gc 1 546 |
+| 4 cores, 3 workers | 2 | 160 | 11 628 | 25 / 1 132 | 22 / 1 116 | 10 / 527 | 14.8 | create 4 125, scripts 2 619, scripts+gc 1 637 |
+| 2 cores, 15 workers | 2 | 788 | 59 888 | 72 / 3 868 | 138 / 10 693 | 248 / 15 428 | 42.0 | render 35 437, scripts 10 477, create 4 279 |
+| 2 cores, 1 worker | 2 | 1 166 | 79 709 | 98 / 7 027 | 288 / 16 908 | 338 / 20 012 | 54.2 | render 31 775, physics 22 483, scripts 10 672 |
+
+- 2-core runs scatter 4x run to run (2 cores / 15 workers: 314 vs 1 261 spikes): cores 0-1 are shared with the rest of
+  the desktop. Trends only: one job worker does not help, physics (PhysX runs on the job workers) triples.
+- 4 cores with 3 workers = 4 cores with 15 workers (11.6 vs 11.8 s spike ms per run).
+
+## Script breakdown
+
+`[Profiler] ScriptBreakdown = true` (with SpikeProbe) splits the spike frames' script residual by method and owner, the
+approach of Skidbladnir's lab StressProf: at the main menu every foreign prefix / postfix / finalizer (1967 in the pack),
+every plugin Update / FixedUpdate / LateUpdate / OnGUI, coroutine `MoveNext` and module `Tick` (764) and the game's own
+Update / FixedUpdate / LateUpdate / CustomUpdate / CustomFixedUpdate / UpdateAI (215) get a First prefix / Last finalizer
+stopwatch pair (13-17 s install, PatchOwnerProbe's crash guards). Self time excludes wrapped children and SpikeProbe hook
+calls; time inside a hook is listed apart. Output `script-breakdown.txt` (top methods / owners in spike frames and in all
+play frames, single-frame max, first 5 play frames after the spawn) and the spikes.tsv column `scriptTop`. Overhead,
+calibrated per wrapped call: 173-177 ns, ~0.45 ms per play frame (2 500 calls), 1.2-2.7 ms per spike frame. It covers
+35-42 % of the residual; the rest is unwrapped work (`Start()` calls, GC, engine script callbacks).
+
+Spike-frame self ms, 16 cores / 2 cores 1 worker (one run each):
+
+| method | owner | 16c | 2c |
+| --- | --- | --- | --- |
+| `Plugin.Update` (one frame: the first play frame) | VNEI | 1 462 | 1 051 |
+| `Player_OnSpawned_Patch.Postfix` | Almanac | 354 | 271 |
+| `ClutterSystem.LateUpdate` | vanilla | 135 | 210 |
+| `ZNetScene.Update` | vanilla | 138 | 163 |
+| `Character.CustomFixedUpdate` | vanilla | 27 | 147 |
+| `SmokeRenderer.LateUpdate` / `Smoke.CustomUpdate` | vanilla | 32 | 264 |
+| `InstanceRenderer.CustomUpdate` | vanilla | 27 | 133 |
+| `Banner.Postfix -> Hud.UpdateEvent` | Boss Awakening | 62 | 49 |
+| `MonoUpdaters.Update` | vanilla | 16 | 66 |
+| `LevelSelection.ModifyTreeWithLevel` coroutine | StarLevelSystem | 44 | 27 |
+| `MotionPolishRunner.LateUpdate` | MorgottTweaks | 20 | 45 |
+| `Player_OnSpawned_Patch.Prefix` | Valheim Plus | 33 | 32 |
+| `Patches.ZInput_GetButtonDown` | Jotunn | 2 | 51 |
+| `SharedRayPatch.Prefix -> StaticPhysics.SUpdate` | Skidbladnir | 8 | 48 |
+| `Teardown.ZNetView_OnDestroy` | Skidbladnir | 24 | 1 |
+
+- First play frame after the spawn (16 cores 2 158 ms, 2 067 ms of it wrapped): VNEI `Plugin.Update` 1 462 (indexing),
+  Almanac `OnSpawned` postfix 354, Boss Awakening banner 61, Valheim Plus `OnSpawned` prefix 33, MorgottTweaks
+  DeathMessages `OnSpawnedPostfix` 11, PotalMap pin sync 9.
+- These runs are on 453a3b1; 2ca9376 fixes a double subtraction of nested hooks (`ZoneSystem.Update` /
+  `ZNetScene.Update` read low there, the rest unaffected).
+
 ## Build
 
 ```powershell
