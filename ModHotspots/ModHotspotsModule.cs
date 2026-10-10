@@ -17,6 +17,10 @@ namespace FastStartup.ModHotspots
             {
                 Lifecycle.ChainloaderStarted += () => Log.Guard("ModHotspots ShaderReplacer", () => ShaderReplacerFix.Install(harmony));
             }
+            if (Config.VneiIndexingEnabled.Value)
+            {
+                Lifecycle.ChainloaderStarted += () => Log.Guard("ModHotspots VNEI indexing", () => VneiIndexingFix.Install(harmony));
+            }
         }
     }
 }

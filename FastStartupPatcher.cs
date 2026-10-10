@@ -60,7 +60,7 @@ namespace FastStartup
                 bool harmonyBatching = Config.HarmonyBatchingEnabled?.Value == true;
                 bool localization = Config.LocalizationCacheEnabled?.Value == true;
                 bool dump = Config.DumpHarmonyState?.Value == true;
-                bool hotspots = Config.ShaderReplacerFixEnabled?.Value == true;
+                bool hotspots = Config.ShaderReplacerFixEnabled?.Value == true || Config.VneiIndexingEnabled?.Value == true;
                 bool hotspotsDump = Config.DumpModHotspots?.Value == true;
                 bool worldGen = Config.ParallelBiomeData != null && Config.WorldGenAny;
                 bool spikes = Config.SpikeProbe?.Value == true;
@@ -102,7 +102,7 @@ namespace FastStartup
                 }
                 if (hotspotsDump)
                 {
-                    ModHotspotsDump.Install();
+                    ModHotspotsDump.Install(new Harmony(ModHotspotsHarmonyId));
                 }
                 if (worldGen)
                 {

@@ -116,11 +116,13 @@ Config `BepInEx\config\FastStartup.cfg`:
 - `[HarmonyBatching] Enabled` (default `true`): one wrapper build per patched method per `Harmony.PatchAll(assembly)`.
 - `[ModHotspots] ShaderReplacer` (default `true`): run blacks7ar's ShaderReplacer helper (OreMines) with one
   shader lookup instead of one per material.
+- `[ModHotspots] VNEIIndexing` (default `true`): build VNEI's item/recipe index a few ms per frame behind the
+  loading screen instead of in one frame right after the spawn (VNEI 0.17.6 only, matched by IL).
 - `[Diagnostics] DumpHarmonyState` (default `false`): write the Harmony patch registry at the main menu to
   `BepInEx\FastStartup\harmony-state.txt` for diffing two setups.
 - `[Diagnostics] DumpModHotspots` (default `false`): write what the ModHotspots replacements produce (every
-  ShaderReplacer material and its shader) at the main menu to `BepInEx\FastStartup\modhotspots-state.txt`, for
-  diffing a toggle off against on.
+  ShaderReplacer material and its shader) at the main menu to `BepInEx\FastStartup\modhotspots-state.txt`, and
+  VNEI's whole index in the spawn frame to `modhotspots-vnei.txt`, for diffing a toggle off against on.
 - `[Profiler] TimeSpawnWindow` (default `false`): with the profiler on, also time the per-frame world-load methods
   between the main scene request and the first spawn, aggregated (see "Profiler output").
 - `[WorldGen] ParallelBiomeData` (default `true`): build the biome/height map of every world load and connect on all
