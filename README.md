@@ -81,6 +81,11 @@ Where the rest of the world load goes (profiler, frame probe + Awake/Start probe
 
 ## Changes
 
+- 0.7.0: VNEI indexing ModHotspot (`[ModHotspots] VNEIIndexing`, on by default): VNEI's index build moved off the
+  first play frame (first play frame 880 -> 204 ms, VNEI 718 -> 6 ms; index dumps byte-identical off vs on).
+  ScriptBreakdown profiler (`[Profiler] ScriptBreakdown`, off by default): per-method / per-owner split of SpikeProbe's
+  script residual, with a self-check (0 negative self times). Weak-PC profiles via the harness `-GameArgs` support
+  (`autotest.ps1 -Affinity N -GameArgs:'-job-worker-count M'`).
 - 0.6.1: SpikeProbe diagnostic (`[Profiler] SpikeProbe`, off by default): per-frame spike attribution in play
   (player-loop subsystem split, world-streaming/terrain/bundle/texture hooks, first-seen shader variants, release
   player counters and player state), written to `spikes.tsv` + `spike-summary.txt`.
