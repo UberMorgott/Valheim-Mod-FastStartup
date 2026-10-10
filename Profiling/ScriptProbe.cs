@@ -30,7 +30,9 @@ namespace FastStartup.Profiling
     /// CustomFixedUpdate / CustomLateUpdate / UpdateAI (owner "vanilla &lt;Type&gt;").</item>
     /// </list>
     /// Self time = time minus wrapped children and minus SpikeProbe hook calls inside it (those are SpikeProbe's own
-    /// signals), so the "outside hooks" sum is comparable with the residual. Time a wrapped method spends inside a
+    /// signals); a child is subtracted only from the wrapped call it runs directly inside (a wrapped call inside a hook
+    /// reaches the outer caller as part of that hook's total), so the "outside hooks" sum is comparable with the residual.
+    /// Self time is checked never to go negative ([Profiler] ScriptProbe self-check line). Time a wrapped method spends inside a
     /// SpikeProbe hook (e.g. a mod's ZNetView.Awake postfix inside ZNetScene.CreateObject) is kept apart as "inHook".
     /// Installed once at the main menu (after SpikeProbe's player loop), main thread only. Safety as
     /// <see cref="PatchOwnerProbe"/>: MonoMod's reflection cache emptied around each wrap; the method being wrapped is
@@ -87,6 +89,12 @@ namespace FastStartup.Profiling
         private static long _playFrames, _playCalls, _spikeFrameCalls, _spikeFrames;
         private static double _spikeFrameMs;
         private static readonly List<string> SpawnLines = new List<string>();
+
+        private const int MaxOffenders = 5;
+        private static readonly long SelfEpsilonTicks = Math.Max(1, Stopwatch.Frequency / 1000000);
+        private static readonly List<string> Offenders = new List<string>();
+        private static long _violations;
+        private static long _loggedViolations = -1;
 
         private static string Dir => Path.Combine(Paths.BepInExRootPath, "FastStartup");
 
@@ -363,7 +371,11 @@ namespace FastStartup.Profiling
             long total = Stopwatch.GetTimestamp() - __state;
             _depth--;
             long self = total - StackChild[_depth];
-            if (_depth > 0)
+            // Only a call directly inside the parent counts as its child. Inside a SpikeProbe hook the hook's whole total
+            // reaches the parent through AddChild when the hook ends, so passing this call's total up as well would
+            // subtract it twice (ZoneSystem.Update went negative by every mod patch running inside SpawnZone /
+            // Heightmap hooks).
+            if (_depth > 0 && StackHookDepth[_depth - 1] == SpikeProbe.HookDepth)
             {
                 StackChild[_depth - 1] += total;
             }
@@ -372,6 +384,10 @@ namespace FastStartup.Profiling
                 return;
             }
             Rec r = Recs[i];
+            if (self < 0)
+            {
+                self = SelfCheck(r, self);
+            }
             r.FrameCalls++;
             _frameCalls++;
             if (SpikeProbe.InHook)
@@ -388,6 +404,28 @@ namespace FastStartup.Profiling
                 Touched.Add(i);
             }
         }
+
+        /// <summary>
+        /// Self-check: children are nested inside their parent, so self time can never be negative. A negative value is an
+        /// accounting bug: it is counted (beyond 1 us) and reported, never emitted; 0 is the guarded fallback.
+        /// </summary>
+        private static long SelfCheck(Rec r, long self)
+        {
+            if (-self > SelfEpsilonTicks)
+            {
+                _violations++;
+                if (Offenders.Count < MaxOffenders)
+                {
+                    Offenders.Add(string.Format(CultureInfo.InvariantCulture, "{0}|{1} {2:F3} ms", r.Owner, r.Name, self * MsPerTick));
+                }
+            }
+            return 0;
+        }
+
+        /// <summary>The self-check line for the log and script-breakdown.txt.</summary>
+        private static string SelfCheckLine(long violations, string[] offenders) =>
+            "[Profiler] ScriptProbe self-check: " + violations.ToString(CultureInfo.InvariantCulture) + " violation(s)" +
+            (offenders.Length > 0 ? " (negative self time; first: " + string.Join("; ", offenders) + ")" : "");
 
         /// <summary>SpikeProbe frame end (main thread). Returns the frame's top methods for a spike row, else null.</summary>
         internal static string EndFrame(bool play, bool spike, double ms)
@@ -488,7 +526,7 @@ namespace FastStartup.Profiling
                 PlayHook = r.PlayHook,
                 PlayCalls = r.PlayCalls,
                 PlayMax = r.PlayMax,
-            }).ToArray(), SpawnLines.ToArray(), _playFrames, _playCalls, _spikeFrames, _spikeFrameCalls, _spikeFrameMs);
+            }).ToArray(), SpawnLines.ToArray(), _playFrames, _playCalls, _spikeFrames, _spikeFrameCalls, _spikeFrameMs, _violations, Offenders.ToArray());
         }
 
         /// <summary>Worker thread: script-breakdown.txt from a <see cref="Snapshot"/>; residualMs = SpikeProbe's script residual over the spike frames.</summary>
@@ -498,8 +536,20 @@ namespace FastStartup.Profiling
             {
                 return;
             }
-            var (rows, spawn, playFrames, playCalls, spikeFrames, spikeCalls, spikeMs) =
-                ((Row[], string[], long, long, long, long, double))snapshot;
+            var (rows, spawn, playFrames, playCalls, spikeFrames, spikeCalls, spikeMs, violations, offenders) =
+                ((Row[], string[], long, long, long, long, double, long, string[]))snapshot;
+            string selfCheck = SelfCheckLine(violations, offenders);
+            if (Interlocked.Exchange(ref _loggedViolations, violations) != violations)
+            {
+                if (violations == 0)
+                {
+                    Log.Info(selfCheck);
+                }
+                else
+                {
+                    Log.Warning(selfCheck);
+                }
+            }
             double nsPerCall = _costTicksPerCall * MsPerTick * 1e6;
             double coveredMs = rows.Sum(r => r.SpikeSelf) * MsPerTick;
             var sb = new StringBuilder();
@@ -512,8 +562,9 @@ namespace FastStartup.Profiling
                 nsPerCall, playFrames, playFrames > 0 ? playCalls / (double)playFrames : 0, playFrames > 0 ? playCalls * nsPerCall / 1000.0 / playFrames : 0,
                 spikeFrames, spikeFrames > 0 ? spikeCalls / (double)spikeFrames : 0, spikeFrames > 0 ? spikeCalls * nsPerCall / 1e6 / spikeFrames : 0, spikeCalls * nsPerCall / 1e6, spikeMs));
             sb.Append(string.Format(CultureInfo.InvariantCulture,
-                "spike frames: script subsystems {0:F0} ms, residual (minus SpikeProbe hooks and probe) {1:F0} ms; wrapped self time outside hooks {2:F0} ms ({3:F0}% of the residual); rest = unwrapped engine/script work and wrapper overhead\n\n",
+                "spike frames: script subsystems {0:F0} ms, residual (minus SpikeProbe hooks and probe) {1:F0} ms; wrapped self time outside hooks {2:F0} ms ({3:F0}% of the residual); rest = unwrapped engine/script work and wrapper overhead\n",
                 scriptMs, residualMs, coveredMs, residualMs > 0 ? 100 * coveredMs / residualMs : 0));
+            sb.Append(selfCheck).Append("\n\n");
 
             void Table(string title, IEnumerable<Row> sel, int n)
             {
