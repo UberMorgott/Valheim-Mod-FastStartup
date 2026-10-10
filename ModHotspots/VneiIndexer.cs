@@ -23,17 +23,23 @@ namespace FastStartup.ModHotspots
     /// VNEI 0.17.6 <c>Plugin.Update</c> + <c>Indexing.IndexAll</c> reimplemented from the decompile (VNEI's code is the
     /// reference only). Same calls on the same objects in the same order (VNEI's public API: <c>Item</c> /
     /// <c>RecipeInfo</c> constructors, <c>Indexing.AddItem/DisableItem/AddRecipeToItems</c>, its events, its log
-    /// lines), but run as an iterator that is stepped <see cref="BudgetMs"/> per frame while the loading screen waits
-    /// for the spawn. <c>Indexing.HasIndexed</c> reads false while the iterator runs, so no VNEI UI sees a half-built
-    /// index. The spawn frame then does what the original did after <c>IndexAll</c>: <c>UpdateKnown</c> and the three
-    /// subscriptions; whatever the loading screen did not finish is finished there first.
-    /// Game collections that are walked across frames (prefab list, recipes, piece lists) are copied when their phase
-    /// starts; a change to them during the loading screen is reported (<see cref="Signature"/>) at the spawn.
-    /// WIP, not equivalent yet (in-game 2026-10-10, run 20261010-054643): before the spawn, IndexRecipes throws a
-    /// NullReferenceException inside <c>new RecipeInfo(recipe, quality)</c> (IL_0022, the
-    /// <c>GetRequiredStation</c>/<c>GetRequiredStationLevel</c> calls, which other mods patch, e.g. AdventureBackpacks'
-    /// <c>GetRequiredStationLevel</c> postfix) and the index ends with 1267 of 4383 recipes. Next step: build only
-    /// the item phases (IndexItems, DisableItems) behind the loading screen and the recipe phases in the spawn frame.
+    /// lines), split in two iterators stepped <see cref="BudgetMs"/> per frame:
+    /// <list type="bullet">
+    /// <item>items (<c>ModNames.IndexModNames</c>, <c>GetPrefabs</c>, <c>IndexItems</c> with its icon renders,
+    /// <c>DisableItems</c>) while the loading screen waits for the spawn (<c>Game.WaitingForRespawn</c>); whatever is
+    /// left is finished in the spawn frame;</item>
+    /// <item>recipes (<c>IndexRecipes</c>, <c>IndexItemRecipes</c>, the width/blacklist pass, favourites,
+    /// <c>IndexFinished</c>) from the spawn frame on, then <c>UpdateKnown</c> and the three subscriptions as in the
+    /// original. They wait for the local player because the recipe constructors call
+    /// <c>Recipe.GetRequiredStation(Level)</c>, which other mods patch with code that needs it: the ItemManager copy in
+    /// Warfare (<c>ItemManager.Item.Patch_MaximumRequiredStationLevel</c>) reads
+    /// <c>Player.m_localPlayer.GetCurrentCraftingStation()</c> and throws before the spawn (2026-10-10 run
+    /// 20261010-054643: NullReferenceException in <c>new RecipeInfo(recipe, quality)</c>, 1267 of 4383 recipes).</item>
+    /// </list>
+    /// <c>Indexing.HasIndexed</c> reads false from the first step to the last outside the iterators, so no VNEI UI sees
+    /// a half-built index. Game collections walked across frames (prefab list, recipes, piece lists) are copied when
+    /// their phase starts; a change to the index inputs between the item phase and the end of the recipe phase is
+    /// reported (<see cref="Signature"/>).
     /// </summary>
     internal static class VneiIndexer
     {
@@ -55,14 +61,35 @@ namespace FastStartup.ModHotspots
         private static FieldInfo _afterIndexingRecipes;
         private static FieldInfo _indexFinished;
 
-        private static IEnumerator _run;
+        private static IEnumerator _itemsRun;
+        private static IEnumerator _recipesRun;
+        private static bool _itemsDone;
         private static bool _inProgress;
         private static bool _stepping;
-        private static long _maxStep;
-        private static bool _ready;
+        private static bool _failed;
+        private static List<GameObject> _prefabs;
+        private static Dictionary<string, PieceTable> _pieceTables;
         private static string _signature;
-        private static int _frames;
-        private static long _ticks;
+        private static Phase _itemPhase;
+        private static Phase _recipePhase;
+        private static long _spawnTicks;
+        private static long _spawnDrainTicks;
+        private static long _knownTicks;
+        private static bool _spawnSeen;
+
+        private struct Phase
+        {
+            public int Frames;
+            public long Ticks;
+            public long Max;
+
+            public void Add(long ticks)
+            {
+                Frames++;
+                Ticks += ticks;
+                Max = Math.Max(Max, ticks);
+            }
+        }
 
         public static void Install(Harmony harmony)
         {
@@ -89,8 +116,14 @@ namespace FastStartup.ModHotspots
             // HasIndexed first: callers JIT-compiled after this cannot inline the original body.
             harmony.Patch(AccessTools.DeclaredMethod(typeof(Indexing), nameof(Indexing.HasIndexed)),
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(VneiIndexer), nameof(HasIndexedPrefix))));
+            // Another caller of IndexAll while the index is built would see HasIndexed false and index twice.
+            harmony.Patch(AccessTools.DeclaredMethod(typeof(Indexing), nameof(Indexing.IndexAll)),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(VneiIndexer), nameof(IndexAllPrefix))));
+            // High: before the index dump (VneiDump, Priority.Low) on the same methods.
             harmony.Patch(AccessTools.DeclaredMethod(typeof(Game), nameof(Game.Logout)),
-                prefix: new HarmonyMethod(AccessTools.Method(typeof(VneiIndexer), nameof(LogoutPrefix))));
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(VneiIndexer), nameof(LeavePrefix))) { priority = Priority.High });
+            harmony.Patch(AccessTools.DeclaredMethod(typeof(Game), "OnApplicationQuit"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(VneiIndexer), nameof(LeavePrefix))) { priority = Priority.High });
             harmony.Patch(AccessTools.DeclaredMethod(typeof(Plugin), "Update"),
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(VneiIndexer), nameof(UpdatePrefix))));
         }
@@ -98,8 +131,8 @@ namespace FastStartup.ModHotspots
         private static FieldInfo Field(Type type, string name) =>
             AccessTools.DeclaredField(type, name) ?? throw new MissingFieldException(type.FullName, name);
 
-        // Outside the iterator only: handlers VNEI calls from inside the index see the real value, as in the original
-        // (true from the first AddItem on).
+        // Outside the iterators only: handlers VNEI calls from inside the index see the real value, as in the
+        // original (true from the first AddItem on).
         private static bool HasIndexedPrefix(ref bool __result)
         {
             if (_inProgress && !_stepping)
@@ -110,21 +143,34 @@ namespace FastStartup.ModHotspots
             return true;
         }
 
-        // Leaving the world while the loading screen indexes: finish now, while the scene's objects still exist.
-        private static void LogoutPrefix()
+        private static bool IndexAllPrefix() => !_inProgress;
+
+        /// <summary>True while an index is started but not finished (VneiDump waits for the whole index).</summary>
+        public static bool Pending => _inProgress;
+
+        // Leaving the world (or quitting) mid-index: items left from the loading screen are finished while the
+        // scene still exists (the recipes then run at the next spawn, which is when the original would index);
+        // recipes started after the spawn are finished now, with the player still there.
+        private static void LeavePrefix()
         {
-            if (_inProgress)
+            try
             {
-                try
+                if (_itemsRun != null)
                 {
-                    Drain();
-                    _ready = true;
-                    Log.Info("ModHotspots: VNEI index finished at logout (left the world before the spawn)");
+                    Drain(ref _itemsRun);
+                    _itemsDone = true;
+                    Log.Info("ModHotspots: VNEI items finished on leaving the world before the spawn");
                 }
-                catch (Exception e)
+                if (_recipesRun != null)
                 {
-                    _log.LogError(e);
+                    Drain(ref _recipesRun);
+                    Finish();
+                    Log.Info("ModHotspots: VNEI recipes finished on leaving the world");
                 }
+            }
+            catch (Exception e)
+            {
+                Fail(e);
             }
         }
 
@@ -136,34 +182,27 @@ namespace FastStartup.ModHotspots
 
         private static int ItemCount() => ((Dictionary<string, Item>)_items.GetValue(null)).Count;
 
-        /// <summary>Plugin.Update (VNEI 0.17.6), with the index built ahead in <see cref="Step"/>.</summary>
+        /// <summary>Plugin.Update (VNEI 0.17.6), the index built by <see cref="StepItems"/> and <see cref="StepRecipes"/>.</summary>
         private static void Update()
         {
-            if (Plugin.openHotkey.Value.IsKeyDown())
+            bool player = (bool)Player.m_localPlayer;
+            // While the index is built (the second or so after the spawn) the hotkeys are ignored: the UI would show
+            // a half-built index, and a favourite toggled there would save over the favourites not loaded yet.
+            bool building = _inProgress;
+            if (!building && Plugin.openHotkey.Value.IsKeyDown())
             {
                 Plugin.OpenUI();
             }
-            bool player = (bool)Player.m_localPlayer;
-            if (player && (_ready || !Indexing.HasIndexed()))
+            // HasIndexed reads false while the index is being built (HasIndexedPrefix): the original condition.
+            if (player && !Indexing.HasIndexed() && !_failed)
             {
-                long before = Stopwatch.GetTimestamp();
-                bool ahead = _ready;
-                if (!_ready)
-                {
-                    Drain();
-                }
-                _ready = false;
-                Report(ahead, Stopwatch.GetTimestamp() - before);
-                Indexing.UpdateKnown();
-                _showOnlyKnown.SettingChanged += delegate { Indexing.UpdateKnown(); };
-                _forceShowOnlyKnown.SettingChanged += delegate { Indexing.UpdateKnown(); };
-                KnownRecipesPatches.OnUpdateKnownRecipes += Indexing.UpdateKnown;
+                StepRecipes();
             }
-            else if (!player && !_ready)
+            else if (!player && !_itemsDone && !_failed)
             {
-                Step();
+                StepItems();
             }
-            if (!Plugin.viewRecipeHotkey.Value.IsKeyDown())
+            if (building || !Plugin.viewRecipeHotkey.Value.IsKeyDown())
             {
                 return;
             }
@@ -198,9 +237,9 @@ namespace FastStartup.ModHotspots
         }
 
         /// <summary>Loading screen: start once the world waits for the spawn, then run up to <see cref="BudgetMs"/>.</summary>
-        private static void Step()
+        private static void StepItems()
         {
-            if (_run == null)
+            if (_itemsRun == null)
             {
                 if (!Game.instance || !Game.instance.WaitingForRespawn() || !ZNetScene.instance || !ObjectDB.instance ||
                     ItemCount() > 0)
@@ -208,75 +247,170 @@ namespace FastStartup.ModHotspots
                     return;
                 }
                 _signature = Signature();
-                _run = Run();
+                _itemsRun = RunItems();
                 _inProgress = true;
             }
             long start = Stopwatch.GetTimestamp();
+            try
+            {
+                if (Slice(ref _itemsRun, start))
+                {
+                    // Stood down (no scene): retried from the start next frame.
+                    _itemsDone = _inProgress;
+                }
+            }
+            catch (Exception e)
+            {
+                Fail(e);
+            }
+            _itemPhase.Add(Stopwatch.GetTimestamp() - start);
+        }
+
+        /// <summary>From the spawn frame on: leftover items in full, then recipes up to <see cref="BudgetMs"/> a frame.</summary>
+        private static void StepRecipes()
+        {
+            long start = Stopwatch.GetTimestamp();
+            bool spawnFrame = !_spawnSeen;
+            _spawnSeen = true;
+            _inProgress = true;
+            try
+            {
+                if (!_itemsDone)
+                {
+                    if (_itemsRun == null)
+                    {
+                        _signature = Signature();
+                        _itemsRun = RunItems();
+                    }
+                    Drain(ref _itemsRun);
+                    _itemsDone = true;
+                    _spawnDrainTicks = Stopwatch.GetTimestamp() - start;
+                    if (!_inProgress)
+                    {
+                        _itemsDone = false;
+                        return;
+                    }
+                }
+                if (_recipesRun == null)
+                {
+                    _recipesRun = RunRecipes();
+                }
+                if (Slice(ref _recipesRun, Stopwatch.GetTimestamp()))
+                {
+                    _recipePhase.Add(Stopwatch.GetTimestamp() - start);
+                    if (spawnFrame)
+                    {
+                        _spawnTicks = Stopwatch.GetTimestamp() - start;
+                    }
+                    Finish();
+                    return;
+                }
+            }
+            catch (Exception e)
+            {
+                Fail(e);
+            }
+            _recipePhase.Add(Stopwatch.GetTimestamp() - start);
+            if (spawnFrame)
+            {
+                _spawnTicks = Stopwatch.GetTimestamp() - start;
+            }
+        }
+
+        /// <summary>Steps <paramref name="run"/> until the budget from <paramref name="start"/> is used; true = done.</summary>
+        private static bool Slice(ref IEnumerator run, long start)
+        {
             long budget = (long)(BudgetMs * Stopwatch.Frequency / 1000.0);
-            _frames++;
             _stepping = true;
             try
             {
                 while (Stopwatch.GetTimestamp() - start < budget)
                 {
-                    if (!_run.MoveNext())
+                    if (!run.MoveNext())
                     {
-                        _run = null;
-                        _inProgress = false;
-                        _ready = true;
-                        break;
+                        run = null;
+                        return true;
                     }
                 }
-            }
-            catch (Exception e)
-            {
-                // As an exception out of the original IndexAll: the index stays as far as it got, nothing more runs.
-                _run = null;
-                _inProgress = false;
-                _log.LogError(e);
+                return false;
             }
             finally
             {
                 _stepping = false;
             }
-            long took = Stopwatch.GetTimestamp() - start;
-            _ticks += took;
-            _maxStep = Math.Max(_maxStep, took);
         }
 
-        private static void Drain()
+        private static void Drain(ref IEnumerator run)
         {
-            if (_run == null)
-            {
-                _run = Run();
-            }
-            _inProgress = true;
             _stepping = true;
             try
             {
-                while (_run.MoveNext())
+                while (run.MoveNext())
                 {
                 }
             }
             finally
             {
-                _run = null;
-                _inProgress = false;
+                run = null;
                 _stepping = false;
             }
         }
 
-        private static void Report(bool ahead, long spawnTicks)
+        // As an exception out of the original IndexAll: the index stays as far as it got, UpdateKnown and the
+        // subscriptions never run, nothing is retried once an item is in (HasIndexed true). Before the first AddItem
+        // the original runs IndexAll again next frame: so does this (from the start).
+        private static void Fail(Exception e)
+        {
+            _itemsRun = null;
+            _recipesRun = null;
+            _inProgress = false;
+            if (ItemCount() > 0)
+            {
+                _failed = true;
+            }
+            else
+            {
+                _itemsDone = false;
+                _prefabs = null;
+                _pieceTables = null;
+            }
+            _log.LogError(e);
+        }
+
+        // Already indexed (by another caller): nothing to do, as the original IndexAll. No scene: retried next frame.
+        private static void StandDown()
+        {
+            _inProgress = false;
+            _failed = ItemCount() > 0;
+        }
+
+        /// <summary>What Plugin.Update did right after IndexAll.</summary>
+        private static void Finish()
+        {
+            _inProgress = false;
+            long before = Stopwatch.GetTimestamp();
+            Indexing.UpdateKnown();
+            _knownTicks = Stopwatch.GetTimestamp() - before;
+            _showOnlyKnown.SettingChanged += delegate { Indexing.UpdateKnown(); };
+            _forceShowOnlyKnown.SettingChanged += delegate { Indexing.UpdateKnown(); };
+            KnownRecipesPatches.OnUpdateKnownRecipes += Indexing.UpdateKnown;
+            Report();
+        }
+
+        private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
+        private static void Report()
         {
             string now = Signature();
             Log.Info(string.Format(CultureInfo.InvariantCulture,
-                "ModHotspots: VNEI index {0}: {1} loading frames, {2:F1} ms before the spawn (longest frame {3:F1} ms), {4:F1} ms in the spawn frame",
-                ahead ? "built behind the loading screen" : _frames > 0 ? "partly built behind the loading screen" : "built in the spawn frame",
-                _frames, _ticks * 1000.0 / Stopwatch.Frequency, _maxStep * 1000.0 / Stopwatch.Frequency,
-                spawnTicks * 1000.0 / Stopwatch.Frequency));
+                "ModHotspots: VNEI index built: items {0} loading frames {1:F1} ms (longest {2:F1} ms){3}; recipes {4} frames " +
+                "from the spawn {5:F1} ms (longest {6:F1} ms) + UpdateKnown {7:F1} ms; spawn frame {8:F1} ms",
+                _itemPhase.Frames, Ms(_itemPhase.Ticks), Ms(_itemPhase.Max),
+                _spawnDrainTicks > 0 ? string.Format(CultureInfo.InvariantCulture, " + {0:F1} ms left for the spawn frame", Ms(_spawnDrainTicks)) : "",
+                _recipePhase.Frames, Ms(_recipePhase.Ticks), Ms(_recipePhase.Max), Ms(_knownTicks), Ms(_spawnTicks)));
             if (_signature != null && now != _signature)
             {
-                Log.Warning($"ModHotspots: VNEI index inputs changed during the loading screen ({_signature} -> {now}); " +
+                Log.Warning($"ModHotspots: VNEI index inputs changed while the index was built ({_signature} -> {now}); " +
                             "set [ModHotspots] VNEIIndexing = false if VNEI misses items");
             }
             _signature = null;
@@ -303,6 +437,7 @@ namespace FastStartup.ModHotspots
                 hash = hash * 31 + (recipe.m_item ? recipe.m_item.name.GetHashCode() : 0);
                 hash = hash * 31 + (recipe.m_craftingStation ? recipe.m_craftingStation.name.GetHashCode() : 0);
                 hash = hash * 31 + recipe.m_minStationLevel;
+                hash = hash * 31 + (recipe.m_item ? recipe.m_item.m_itemData.m_shared.m_maxQuality : 0);
                 foreach (Piece.Requirement requirement in recipe.m_resources ?? new Piece.Requirement[0])
                 {
                     hash = hash * 31 + (requirement.m_resItem ? requirement.m_resItem.name.GetHashCode() : 0);
@@ -337,37 +472,49 @@ namespace FastStartup.ModHotspots
             }
         }
 
-        /// <summary>Indexing.IndexAll; one step per prefab / recipe / piece.</summary>
-        private static IEnumerator Run()
+        /// <summary>Indexing.IndexAll up to DisableItems; one step per prefab / piece.</summary>
+        private static IEnumerator RunItems()
         {
+            // Indexed by someone else / no scene: stand down (the original returns without indexing).
             if (ItemCount() > 0)
             {
+                StandDown();
                 yield break;
             }
             if (!ZNetScene.instance)
             {
                 _log.LogWarning("Cannot index: ZNetScene.instance is null");
+                StandDown();
                 yield break;
             }
             _log.LogInfo("Index items and recipes");
             ModNames.IndexModNames();
             yield return null;
-            var pieceTables = new Dictionary<string, PieceTable>();
-            List<GameObject> prefabs = GetPrefabs();
+            _pieceTables = new Dictionary<string, PieceTable>();
+            _prefabs = GetPrefabs();
             yield return null;
-            foreach (object step in IndexItems(prefabs, pieceTables))
+            foreach (object step in IndexItems(_prefabs, _pieceTables))
             {
                 yield return step;
             }
-            foreach (object step in DisableItems(prefabs))
+            foreach (object step in DisableItems(_prefabs))
             {
                 yield return step;
+            }
+        }
+
+        /// <summary>Indexing.IndexAll from IndexRecipes on; one step per recipe / prefab / piece / 64 recipe infos.</summary>
+        private static IEnumerator RunRecipes()
+        {
+            if (_prefabs == null)
+            {
+                yield break;
             }
             foreach (object step in IndexRecipes())
             {
                 yield return step;
             }
-            foreach (object step in IndexItemRecipes(prefabs, pieceTables))
+            foreach (object step in IndexItemRecipes(_prefabs, _pieceTables))
             {
                 yield return step;
             }
@@ -384,6 +531,8 @@ namespace FastStartup.ModHotspots
             FavouritesSave.Load();
             _log.LogInfo($"Loaded {Indexing.GetActiveItems().Count()} items and {RecipeInfo.Recipes.Count} recipes");
             Invoke(_indexFinished);
+            _prefabs = null;
+            _pieceTables = null;
         }
 
         private static List<GameObject> GetPrefabs()

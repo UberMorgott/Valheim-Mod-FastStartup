@@ -18,12 +18,13 @@ using VNEI.Patches;
 namespace FastStartup.ModHotspots
 {
     /// <summary>
-    /// <c>[Diagnostics] DumpModHotspots</c> with VNEI loaded: in the first <c>Plugin.Update</c> that has both a local
-    /// player and an index (the spawn frame, after <c>UpdateKnown</c>), writes VNEI's whole index to
+    /// <c>[Diagnostics] DumpModHotspots</c> with VNEI loaded: on leaving the world (<c>Game.Logout</c> or
+    /// <c>Game.OnApplicationQuit</c>), the first time an index exists, writes VNEI's whole index to
     /// BepInEx\FastStartup\modhotspots-vnei.txt in its own order: every item (names, texts, type, flags, mod, prefab,
     /// icon sprite + texture + pixel hash when readable, the recipes it is result / ingredient of), both name lookups,
     /// every recipe (stations, ingredient and result groups with amounts, width, flags) and the subscriber counts of
     /// the events <c>Plugin.Update</c> and <c>Item</c> subscribe to. VNEIIndexing off vs on must give the same file.
+    /// Written on leaving, not in play: the ~100 ms dump would land in the frames the profiler measures.
     /// </summary>
     internal static class VneiDump
     {
@@ -31,17 +32,20 @@ namespace FastStartup.ModHotspots
 
         public static void Install(Harmony harmony)
         {
-            harmony.Patch(AccessTools.DeclaredMethod(typeof(Plugin), "Update"),
-                postfix: new HarmonyMethod(AccessTools.Method(typeof(VneiDump), nameof(UpdatePostfix))));
+            // Low: after VneiIndexer's prefixes (Priority.High) finished an index still in progress.
+            var prefix = new HarmonyMethod(AccessTools.Method(typeof(VneiDump), nameof(LeavePrefix))) { priority = Priority.Low };
+            harmony.Patch(AccessTools.DeclaredMethod(typeof(Game), nameof(Game.Logout)), prefix: prefix);
+            harmony.Patch(AccessTools.DeclaredMethod(typeof(Game), "OnApplicationQuit"), prefix: prefix);
         }
 
-        private static void UpdatePostfix()
+        private static void LeavePrefix()
         {
-            if (_written || !Player.m_localPlayer || Items().Count == 0)
+            // Only a whole index (VneiIndexer drained one in progress before this prefix; Pending is false when the
+            // replacement is not installed).
+            if (_written || Items().Count == 0 || RecipeInfo.Recipes.Count == 0 || VneiIndexer.Pending)
             {
                 return;
             }
-            _written = true;
             Log.Guard("VNEI index dump", Write);
         }
 
@@ -98,6 +102,7 @@ namespace FastStartup.ModHotspots
               .Append(" modNames=").Append(Static<System.Collections.ICollection>(typeof(ModNames), "SourceMod").Count).Append('\n');
             string path = Path.Combine(Paths.BepInExRootPath, "FastStartup", "modhotspots-vnei.txt");
             AtomicFile.WriteAllText(path, sb.ToString());
+            _written = true;
             Log.Info($"ModHotspots: VNEI index ({items.Count} items, {recipes.Count} recipes) written to {path}");
         }
 

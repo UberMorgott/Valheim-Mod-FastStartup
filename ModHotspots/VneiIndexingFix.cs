@@ -13,8 +13,8 @@ namespace FastStartup.ModHotspots
     /// first frame that has a local player, i.e. the first frame of play (1.0-1.5 s here: 3026 items, 4383 recipes, one
     /// Jotunn <c>RenderManager.Render</c> per icon-less prefab = PNG read + decode from the icon cache, localization,
     /// recipe graph). Replacement (<see cref="VneiIndexer"/>): the same index, built by the same calls in the same
-    /// order, a few ms per frame while the loading screen waits for the spawn (<c>Game.WaitingForRespawn</c>); the
-    /// rest, if any, finishes in the spawn frame like before. Only applied when every reimplemented method has the IL
+    /// order, a few ms per frame: items while the loading screen waits for the spawn (<c>Game.WaitingForRespawn</c>),
+    /// recipes in the frames from the spawn on (other mods' recipe patches need the local player). Only applied when every reimplemented method has the IL
     /// fingerprint of VNEI 0.17.6 (<see cref="Known"/>); this class touches no VNEI type, so it is safe without VNEI.
     /// </summary>
     internal static class VneiIndexingFix

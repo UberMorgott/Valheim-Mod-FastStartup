@@ -98,10 +98,10 @@ namespace FastStartup.Core
                 "per material. Same shader assignments in the same order; only the known slow version of the helper is " +
                 "replaced (matched by its IL). Read once at launch.");
             VneiIndexingEnabled = file.Bind("ModHotspots", "VNEIIndexing", true,
-                "Build VNEI's item/recipe index during the loading screen, a few ms per frame, instead of in one ~1-1.5 s " +
-                "frame right after the player spawns. Same calls in the same order, same index and UI; whatever is left at " +
-                "spawn finishes in that frame as before. Only VNEI 0.17.6's exact code is replaced (matched by its IL). " +
-                "Read once at launch.");
+                "Build VNEI's index a few ms per frame instead of in one ~1-1.5 s frame right after the player spawns: the " +
+                "items (with their icon renders) during the loading screen, the recipes in the frames after the spawn (other " +
+                "mods' recipe patches need the player). Same calls in the same order, same index and UI. Only VNEI 0.17.6's " +
+                "exact code is replaced (matched by its IL). Read once at launch.");
             DumpModHotspots = file.Bind("Diagnostics", "DumpModHotspots", false,
                 "At the main menu write the state the ModHotspots replacements produce (e.g. every ShaderReplacer material " +
                 "and its shader) to BepInEx\\FastStartup\\modhotspots-state.txt, for diffing a toggle off against on.");
