@@ -153,8 +153,7 @@ namespace FastStartup.BundleCache
                 {
                     ScanDll(dll, offsetField, found);
                 }
-                catch (Exception e) when (e is IOException || e is BadImageFormatException || e is UnauthorizedAccessException ||
-                                          e is InvalidDataException || e is ArgumentException || e is EndOfStreamException)
+                catch (Exception)
                 {
                     // Not a managed DLL or unreadable: the chainloader decides about it, its bundles stay on the normal path.
                 }
