@@ -47,6 +47,7 @@ namespace FastStartup.BundleCache
         private static int _misses;
         private static int _alreadyFast;
         private static int _passedThrough;
+        private static int _hitFailures;
         private static int _created;
         private static long _createdBytes;
 
@@ -93,16 +94,25 @@ namespace FastStartup.BundleCache
             {
                 return false; // an earlier prefix already produced the result
             }
-            string cached = Lookup(stream, crc);
-            if (cached == null)
+            Hit hit = Lookup(stream, crc);
+            if (hit == null)
             {
                 return true;
             }
-            AssetBundle bundle = AssetBundle.LoadFromFile(cached);
+            AssetBundle bundle = null;
+            string error = "LoadFromFile returned null";
+            try
+            {
+                bundle = AssetBundle.LoadFromFile(hit.Path);
+            }
+            catch (Exception e)
+            {
+                error = e.GetType().Name + ": " + e.Message;
+            }
             if (bundle == null)
             {
-                Log.WarningOnce(LogKey + "hitFailed." + cached,
-                    $"BundleCache: cached copy {Path.GetFileName(cached)} did not load, using the original stream");
+                // Vanilla behaviour: the original stream load runs (this prefix returns true), the copy is dropped.
+                Invalidate(hit, error, fallback: true);
                 return true;
             }
             __result = bundle;
@@ -115,22 +125,65 @@ namespace FastStartup.BundleCache
             {
                 return false;
             }
-            string cached = Lookup(stream, crc);
-            if (cached == null)
+            Hit hit = Lookup(stream, crc);
+            if (hit == null)
             {
                 return true;
             }
-            AssetBundleCreateRequest request = AssetBundle.LoadFromFileAsync(cached);
+            AssetBundleCreateRequest request = null;
+            string error = "LoadFromFileAsync returned null";
+            try
+            {
+                request = AssetBundle.LoadFromFileAsync(hit.Path);
+            }
+            catch (Exception e)
+            {
+                error = e.GetType().Name + ": " + e.Message;
+            }
             if (request == null)
             {
+                Invalidate(hit, error, fallback: true);
                 return true;
             }
+            // A request that completes without a bundle cannot be swapped for the original any more (the caller holds
+            // it); the copy is dropped so the next launch loads the original and rebuilds it.
+            request.completed += _ => Log.Guard("BundleCache async hit", () =>
+            {
+                if (request.assetBundle == null)
+                {
+                    Invalidate(hit, "LoadFromFileAsync completed without a bundle", fallback: false);
+                }
+            });
             __result = request;
             return false;
         }
 
-        /// <summary>Cached copy path on a hit; null = load the original (and queue it when it is LZMA).</summary>
-        private static string Lookup(Stream stream, uint crc)
+        /// <summary>A served copy that Unity could not load: never served again (local copy deleted, pack copy
+        /// rejected for this session) and, for a local copy, queued for a rebuild from the original.</summary>
+        private static void Invalidate(Hit hit, string error, bool fallback)
+        {
+            _hitFailures++;
+            Log.WarningOnce(LogKey + "hitFailed." + hit.Source.FileName,
+                $"BundleCache: cached copy of {hit.Source.Label} ({Path.GetFileName(hit.Path)}) did not load ({error}), " +
+                (fallback ? "loading the original instead" : "the original is loaded from the next launch on") + "; copy invalidated");
+            if (hit.FromPack)
+            {
+                _pack.Reject(hit.Source.FileName);
+                return;
+            }
+            TryDelete(hit.Path);
+            Enqueue(hit.Source);
+        }
+
+        private sealed class Hit
+        {
+            public string Path;
+            public bool FromPack;
+            public ResourceSource Source;
+        }
+
+        /// <summary>Cached copy on a hit; null = load the original (and queue it when it is LZMA).</summary>
+        private static Hit Lookup(Stream stream, uint crc)
         {
             if (!_active || crc != 0)
             {
@@ -152,7 +205,7 @@ namespace FastStartup.BundleCache
                     _store.MarkPackServed(source.FileName);
                     _packHits++;
                     _hitBytes += source.Length;
-                    return packed;
+                    return new Hit { Path = packed, FromPack = true, Source = source };
                 }
                 string path = _store.PathOf(source);
                 if (File.Exists(path))
@@ -164,7 +217,7 @@ namespace FastStartup.BundleCache
                         _store.MarkUsed(source.FileName);
                         _hits++;
                         _hitBytes += source.Length;
-                        return path;
+                        return new Hit { Path = path, Source = source };
                     }
                     Log.WarningOnce(LogKey + "invalid." + source.FileName, $"BundleCache: cached copy of {source.Label} is incomplete, rebuilding it");
                     TryDelete(path);
@@ -214,7 +267,7 @@ namespace FastStartup.BundleCache
                 return;
             }
             Log.Info($"BundleCache: {_packHits} pack hits + {_hits} local hits ({_hitBytes / (1024.0 * 1024.0):F1} MB served from LZ4 copies), {_misses} LZMA misses queued, " +
-                     $"{_alreadyFast} already LZ4/uncompressed, {_passedThrough} not cacheable");
+                     $"{_alreadyFast} already LZ4/uncompressed, {_passedThrough} not cacheable, {_hitFailures} copies failed to load (originals used)");
             _main = SynchronizationContext.Current;
             if (_main == null)
             {

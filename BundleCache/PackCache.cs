@@ -102,6 +102,15 @@ namespace FastStartup.BundleCache
             }
         }
 
+        /// <summary>A copy that Unity failed to load: never served again in this session (the pack dir is read-only).</summary>
+        public void Reject(string fileName)
+        {
+            lock (_checked)
+            {
+                _checked[fileName] = false;
+            }
+        }
+
         private string Problem(Entry entry, ResourceSource source, Stream stream, string path)
         {
             if (!string.Equals(entry.ResourceName, source.ResourceName, StringComparison.Ordinal))

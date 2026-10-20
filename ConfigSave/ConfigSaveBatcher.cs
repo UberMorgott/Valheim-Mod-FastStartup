@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using FastStartup.Core;
@@ -13,7 +14,8 @@ namespace FastStartup.ConfigSave
     /// BepInEx 5.4.23 <c>ConfigFile.Bind</c> and every value change call <c>Save()</c> while <c>SaveOnConfigSet</c> is
     /// true, and <c>Save()</c> rewrites the whole file: ~1130 writes during startup here (~730 while plugins load, ~400
     /// more from AdventureBackpacks while the menu scene builds). From <c>Chainloader.Start</c> until the main menu is ready,
-    /// <c>Save()</c> only records the file (once); every recorded file is written once at the end of
+    /// BepInEx's own implicit <c>Save()</c> (from Bind / a value change / saveOnInit) only records the file (once);
+    /// an explicit <c>Save()</c> by a mod writes at once, as BepInEx would (see <see cref="IsImplicitSave"/>). Every recorded file is written once at the end of
     /// <c>Chainloader.Start</c> (finalizer: also when it throws) and again at the main menu, where deferring stops.
     /// Nothing else changes: <c>SaveOnConfigSet</c> is never touched, so mods read the value they set.
     /// A <c>Reload()</c> of a pending file writes it first (Reload would otherwise re-read the older disk copy),
@@ -31,6 +33,7 @@ namespace FastStartup.ConfigSave
 
         private static bool _active;
         private static int _deferred;
+        private static int _explicit;
 
         /// <summary>Set while this module itself writes a file, so its own Save call is not deferred.</summary>
         [ThreadStatic] private static bool _bypass;
@@ -72,6 +75,28 @@ namespace FastStartup.ConfigSave
                 {
                     return true;
                 }
+            }
+            // BepInEx's implicit saves are guarded by SaveOnConfigSet, so with it off every call is a mod's own.
+            if (!__instance.SaveOnConfigSet || !IsImplicitSave())
+            {
+                // Explicit Save(): BepInEx writes synchronously and a caller may read the file right after, so it
+                // runs now; it writes the whole current state, which also settles a pending deferred write.
+                lock (Lock)
+                {
+                    _explicit++;
+                    if (Stamps.Remove(__instance))
+                    {
+                        Pending.Remove(__instance);
+                    }
+                }
+                return true;
+            }
+            lock (Lock)
+            {
+                if (!_active)
+                {
+                    return true;
+                }
                 _deferred++;
                 if (!Stamps.ContainsKey(__instance))
                 {
@@ -80,6 +105,45 @@ namespace FastStartup.ConfigSave
                 }
                 return false;
             }
+        }
+
+        /// <summary>
+        /// True when the running <c>ConfigFile.Save</c> was called by BepInEx itself: <c>Bind&lt;T&gt;</c> and
+        /// <c>OnSettingChanged</c> (both <c>if (SaveOnConfigSet) Save();</c>) or the constructor's <c>saveOnInit</c>
+        /// write (BepInEx 5.4.23 ConfigFile decompile). Decided by the direct caller frame, so an explicit
+        /// <c>Save()</c> from a <c>SettingChanged</c> handler (run inside <c>OnSettingChanged</c>) stays explicit.
+        /// Harmony's replacement of Save and reflection frames are skipped. Unknown shape = explicit (immediate write).
+        /// </summary>
+        private static bool IsImplicitSave()
+        {
+            StackFrame[] frames = new StackTrace(1, false).GetFrames();
+            if (frames == null)
+            {
+                return false;
+            }
+            foreach (StackFrame frame in frames)
+            {
+                MethodBase method = frame.GetMethod();
+                if (method == null || method is System.Reflection.Emit.DynamicMethod)
+                {
+                    continue; // Harmony's patched copy of Save (or an unknown native frame)
+                }
+                Type type = method.DeclaringType;
+                if (type == null)
+                {
+                    continue;
+                }
+                string ns = type.Namespace ?? "";
+                if (type == typeof(ConfigSaveBatcher) || ns.StartsWith("HarmonyLib", StringComparison.Ordinal) ||
+                    ns.StartsWith("MonoMod", StringComparison.Ordinal) || ns.StartsWith("System.Reflection", StringComparison.Ordinal) ||
+                    (type == typeof(ConfigFile) && method.Name == nameof(ConfigFile.Save)))
+                {
+                    continue;
+                }
+                return type == typeof(ConfigFile) &&
+                       (method.Name == nameof(ConfigFile.Bind) || method.Name == "OnSettingChanged" || method.Name == ".ctor");
+            }
+            return false;
         }
 
         private static void ReloadPrefix(ConfigFile __instance, out DiskStamp? __state)
@@ -128,6 +192,7 @@ namespace FastStartup.ConfigSave
         {
             ConfigFile[] files;
             int deferred;
+            int explicitSaves;
             lock (Lock)
             {
                 if (!_active)
@@ -137,7 +202,9 @@ namespace FastStartup.ConfigSave
                 _active = !stop;
                 files = Pending.ToArray();
                 deferred = _deferred;
+                explicitSaves = _explicit;
                 _deferred = 0;
+                _explicit = 0;
                 Pending.Clear();
                 Stamps.Clear();
             }
@@ -151,7 +218,7 @@ namespace FastStartup.ConfigSave
                 }
             }
             Log.Info($"ConfigSaveBatcher: {deferred} saves deferred -> {files.Length} file writes at {reason} " +
-                     $"in {watch.ElapsedMilliseconds} ms" + (failed > 0 ? $", {failed} failed" : ""));
+                     $"in {watch.ElapsedMilliseconds} ms, {explicitSaves} explicit saves written at once" + (failed > 0 ? $", {failed} failed" : ""));
         }
 
         /// <summary>Runs the real Save now. A failure is logged here: the plugin whose Bind triggered it has moved on.</summary>
