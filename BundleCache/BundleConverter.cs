@@ -230,9 +230,9 @@ namespace FastStartup.BundleCache
                                 written += count;
                                 progress?.Invoke(written);
                             });
-                            if (lzma.Consumed > s.BlockCompressed[i])
+                            if (!lzma.EndsCleanly())
                             {
-                                throw new InvalidDataException("LZMA block read past its packed size");
+                                throw new InvalidDataException("LZMA block does not end cleanly at its unpacked size");
                             }
                             break;
                         default:

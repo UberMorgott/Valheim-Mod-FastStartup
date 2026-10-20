@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using BepInEx;
@@ -30,6 +31,7 @@ namespace FastStartup.BundleCache
 
         private static readonly List<ResourceSource> Pending = new List<ResourceSource>();
         private static readonly HashSet<string> Queued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, ResourceSource> Parked = new Dictionary<string, ResourceSource>(StringComparer.OrdinalIgnoreCase);
         private static Harmony _harmony;
         private static CacheStore _store;
         private static PackCache _pack;
@@ -183,7 +185,13 @@ namespace FastStartup.BundleCache
                 _pack.Reject(hit.Source.FileName);
                 return;
             }
+            EagerBuilder.Release(hit.Source.FileName);
             TryDelete(hit.Path);
+            lock (Pending)
+            {
+                Queued.Remove(hit.Source.FileName);
+                Parked.Remove(hit.Source.FileName);
+            }
             Enqueue(hit.Source);
         }
 
@@ -264,6 +272,27 @@ namespace FastStartup.BundleCache
             return null;
         }
 
+        /// <summary>Worker thread: a failed eager job's dropped miss is rebuilt by the Unity queue after all.</summary>
+        private static void OnEagerFailed(string fileName)
+        {
+            _main?.Post(_ => Log.Guard("BundleCache eager failed", () =>
+            {
+                lock (Pending)
+                {
+                    if (!Parked.TryGetValue(fileName, out ResourceSource source))
+                    {
+                        return;
+                    }
+                    Parked.Remove(fileName);
+                    Pending.Add(source);
+                }
+                if (_menuReady && !_running)
+                {
+                    Next();
+                }
+            }), null);
+        }
+
         private static void Enqueue(ResourceSource source)
         {
             lock (Pending)
@@ -293,6 +322,7 @@ namespace FastStartup.BundleCache
                 Log.Info(EagerBuilder.Summary() + $"; {_eagerHits} of the local hits were copies finished while their load waited");
             }
             _main = SynchronizationContext.Current;
+            EagerBuilder.JobFailed += OnEagerFailed;
             if (_main == null)
             {
                 Log.Warning("BundleCache: no Unity synchronization context on the main thread, cache not populated");
@@ -334,7 +364,11 @@ namespace FastStartup.BundleCache
             {
                 // Keys the eager builder produces (or produced) need no Unity recompress of the original; a failed
                 // eager job releases its key, so that miss is rebuilt here as before.
-                Pending.RemoveAll(s => !_eagerOff && EagerBuilder.Owns(s.FileName));
+                foreach (ResourceSource owned in Pending.Where(s => !_eagerOff && EagerBuilder.Owns(s.FileName)).ToList())
+                {
+                    Pending.Remove(owned);
+                    Parked[owned.FileName] = owned; // back into the queue if the eager job fails (OnEagerFailed)
+                }
                 source = Pending.Count > 0 ? Pending[0] : null;
                 if (source != null)
                 {

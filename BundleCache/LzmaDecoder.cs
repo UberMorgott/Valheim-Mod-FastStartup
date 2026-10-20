@@ -270,10 +270,39 @@ namespace FastStartup.BundleCache
             {
                 sink(window, chunkStart, wpos - chunkStart);
             }
+            _endState = state;
+            _endTotal = total;
         }
 
-        /// <summary>True when the range coder ended cleanly (no end marker: code is 0).</summary>
-        public bool FinishedOk => _code == 0;
+        private int _endState;
+        private long _endTotal;
+
+        /// <summary>
+        /// After <see cref="Decode"/>: the stream ends cleanly at the known size, as LzmaSpec.cpp accepts it: either
+        /// the range coder is finished (code 0, no end marker) or exactly one end marker follows (a match with
+        /// distance 0xFFFFFFFF) and then the coder is finished. Anything else = corrupt or wrongly decoded stream.
+        /// </summary>
+        public bool EndsCleanly()
+        {
+            if (_code == 0)
+            {
+                return true;
+            }
+            try
+            {
+                int posState = (int)_endTotal & ((1 << _pb) - 1);
+                if (DecodeBit(_isMatch, (_endState << NumPosBitsMax) + posState) == 0 || DecodeBit(_isRep, _endState) != 0)
+                {
+                    return false;
+                }
+                int len = _lenDecoder.Decode(this, posState);
+                return DecodeDistance(len) == 0xFFFFFFFF && _code == 0;
+            }
+            catch (Exception e) when (e is InvalidDataException || e is EndOfStreamException)
+            {
+                return false;
+            }
+        }
 
         private static int Back(int wpos, uint distance, int wsize)
         {

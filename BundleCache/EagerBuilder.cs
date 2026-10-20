@@ -74,7 +74,54 @@ namespace FastStartup.BundleCache
         {
             lock (Jobs)
             {
-                return Jobs.Values.Where(j => j.State == JobState.Done).Select(j => j.FileName).ToList();
+                return Jobs.Values.Where(j => j.State == JobState.Done).Select(j => j.FileName)
+                    .Concat(Leftovers).Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Where(name => !File.Exists(Path.Combine(_dir, name + CacheStore.UpgradeExtension))).ToList();
+            }
+        }
+
+        /// <summary>A built copy Unity could not load was deleted: the key goes back to the normal miss path.</summary>
+        public static void Release(string fileName)
+        {
+            lock (Jobs)
+            {
+                if (Jobs.TryGetValue(fileName, out Job job))
+                {
+                    job.State = JobState.Failed;
+                }
+                Leftovers.Remove(fileName);
+            }
+        }
+
+        /// <summary>Raised on a worker thread when a job fails, so a miss the post-menu queue dropped is rebuilt.</summary>
+        public static event Action<string> JobFailed;
+
+        /// <summary>Uncompressed copies of earlier sessions (finished after that menu): still due for the LZ4 upgrade.</summary>
+        private static readonly HashSet<string> Leftovers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        private static void FindLeftovers()
+        {
+            foreach (string path in Directory.GetFiles(_dir, "*.bundle"))
+            {
+                try
+                {
+                    using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    {
+                        BundleConverter.Source s = BundleConverter.Parse(file, out _);
+                        // Unity's own copies are LZ4; an all-stored copy is one of ours.
+                        if (s != null && s.BlockFlags.All(f => (f & 0x3F) == 0))
+                        {
+                            lock (Jobs)
+                            {
+                                Leftovers.Add(Path.GetFileName(path));
+                            }
+                        }
+                    }
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is InvalidDataException || e is EndOfStreamException)
+                {
+                    // Unreadable now: looked at again next launch.
+                }
             }
         }
 
@@ -142,6 +189,7 @@ namespace FastStartup.BundleCache
 
         private static void Scan()
         {
+            FindLeftovers();
             var found = new List<Job>();
             string plugins = Paths.PluginPath;
             FieldInfo offsetField = typeof(EmbeddedResource).GetField("offset", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -337,6 +385,10 @@ namespace FastStartup.BundleCache
                     job.State = problem == null ? JobState.Done : JobState.Failed;
                 }
                 job.Finished.Set();
+                if (problem != null)
+                {
+                    JobFailed?.Invoke(job.FileName);
+                }
                 if (problem == null && Config.ProfilerEnabled?.Value == true)
                 {
                     Log.Info($"BundleCache eager: {job.Label} {job.DataSize / (1024.0 * 1024.0):F1} MB in {job.Watch.ElapsedMilliseconds} ms (t={Clock.ElapsedMilliseconds} ms)");
