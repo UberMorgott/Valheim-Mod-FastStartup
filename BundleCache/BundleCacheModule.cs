@@ -39,6 +39,8 @@ namespace FastStartup.BundleCache
         private static bool _menuReady;
         private static bool _running;
         private static bool _maintained;
+        private static bool _eagerOff;
+        private static List<string> _upgrades;
         private static readonly Stopwatch PopulateTime = new Stopwatch();
 
         private static int _hits;
@@ -48,8 +50,13 @@ namespace FastStartup.BundleCache
         private static int _alreadyFast;
         private static int _passedThrough;
         private static int _hitFailures;
+        private static int _eagerHits;
+        private static int _upgraded;
         private static int _created;
         private static long _createdBytes;
+
+        /// <summary>BepInEx\FastStartup\cache\bundles (the per-Unity-version directory lives below it).</summary>
+        public static string CacheRoot => Path.GetFullPath(Path.Combine(Paths.BepInExRootPath, Path.Combine("FastStartup", Path.Combine("cache", "bundles"))));
 
         public static void Install(Harmony harmony)
         {
@@ -68,7 +75,12 @@ namespace FastStartup.BundleCache
             // Everything FastStartup writes stays under BepInEx\FastStartup in the game folder (owner rule: no caches
             // in AppData/LocalLow/%TEMP%), so deleting that folder removes it all.
             string root = Path.GetFullPath(Path.Combine(Paths.BepInExRootPath, "FastStartup"));
-            _store = new CacheStore(Path.Combine(root, Path.Combine("cache", "bundles")), Application.unityVersion);
+            _store = new CacheStore(CacheRoot, Application.unityVersion);
+            if (EagerBuilder.Started && !EagerBuilder.Matches(_store.Dir))
+            {
+                Log.Warning($"BundleCache: the eager build guessed another cache directory than Unity's {_store.Dir}; its copies are not used");
+                _eagerOff = true;
+            }
             // Modpack-shipped copies (read-only, same key and version folder): BepInEx\FastStartup\pack\bundles\v1-<Unity>.
             _pack = PackCache.Open(Path.Combine(root, Path.Combine("pack", Path.Combine("bundles", Path.GetFileName(_store.Dir)))), _store.Dir);
             Hook("LoadFromStreamInternal", nameof(StreamPrefix));
@@ -222,6 +234,14 @@ namespace FastStartup.BundleCache
                     Log.WarningOnce(LogKey + "invalid." + source.FileName, $"BundleCache: cached copy of {source.Label} is incomplete, rebuilding it");
                     TryDelete(path);
                 }
+                else if (!_eagerOff && EagerBuilder.TryWait(source.FileName) && BundleHeader.IsCompleteCopy(path))
+                {
+                    _store.MarkUsed(source.FileName);
+                    _hits++;
+                    _eagerHits++;
+                    _hitBytes += source.Length;
+                    return new Hit { Path = path, Source = source };
+                }
                 switch (BundleHeader.Classify(stream))
                 {
                     case BundleCompression.Lzma:
@@ -268,6 +288,10 @@ namespace FastStartup.BundleCache
             }
             Log.Info($"BundleCache: {_packHits} pack hits + {_hits} local hits ({_hitBytes / (1024.0 * 1024.0):F1} MB served from LZ4 copies), {_misses} LZMA misses queued, " +
                      $"{_alreadyFast} already LZ4/uncompressed, {_passedThrough} not cacheable, {_hitFailures} copies failed to load (originals used)");
+            if (EagerBuilder.Started && !_eagerOff)
+            {
+                Log.Info(EagerBuilder.Summary() + $"; {_eagerHits} of the local hits were copies finished while their load waited");
+            }
             _main = SynchronizationContext.Current;
             if (_main == null)
             {
@@ -308,11 +332,18 @@ namespace FastStartup.BundleCache
             ResourceSource source;
             lock (Pending)
             {
+                // Keys the eager builder produces (or produced) need no Unity recompress of the original; a failed
+                // eager job releases its key, so that miss is rebuilt here as before.
+                Pending.RemoveAll(s => !_eagerOff && EagerBuilder.Owns(s.FileName));
                 source = Pending.Count > 0 ? Pending[0] : null;
                 if (source != null)
                 {
                     Pending.RemoveAt(0);
                 }
+            }
+            if (source == null && NextUpgrade())
+            {
+                return;
             }
             if (source == null)
             {
@@ -320,7 +351,8 @@ namespace FastStartup.BundleCache
                 if (PopulateTime.IsRunning)
                 {
                     PopulateTime.Stop();
-                    Log.Info($"BundleCache: cached {_created} bundles ({_createdBytes / (1024.0 * 1024.0):F1} MB LZ4) in {PopulateTime.Elapsed.TotalSeconds:F1} s");
+                    Log.Info($"BundleCache: cached {_created} bundles ({_createdBytes / (1024.0 * 1024.0):F1} MB LZ4), {_upgraded} eager copies recompressed to LZ4 " +
+                             $"for the next launch, in {PopulateTime.Elapsed.TotalSeconds:F1} s");
                 }
                 if (!_maintained)
                 {
@@ -337,6 +369,70 @@ namespace FastStartup.BundleCache
                 bool copied = CopyResource(source, input);
                 _main.Post(__ => Log.Guard("BundleCache recompress", () => Recompress(source, input, copied)), null);
             });
+        }
+
+        /// <summary>
+        /// Main thread, once the miss queue is empty: recompresses one eagerly built (uncompressed) copy to Unity's
+        /// own LZ4 next to it (<see cref="CacheStore.UpgradePath"/>); the preloader promotes it over the copy at the
+        /// next launch (the copy itself is loaded now and cannot be replaced). False when nothing is left.
+        /// </summary>
+        private static bool NextUpgrade()
+        {
+            if (_eagerOff || !EagerBuilder.Started)
+            {
+                return false;
+            }
+            if (_upgrades == null)
+            {
+                _upgrades = EagerBuilder.Built();
+            }
+            if (_upgrades.Count == 0)
+            {
+                return false;
+            }
+            string fileName = _upgrades[0];
+            _upgrades.RemoveAt(0);
+            string input = Path.Combine(_store.Dir, fileName);
+            string output = Path.Combine(_store.Dir, fileName + "." + Process.GetCurrentProcess().Id + ".lz4.tmp");
+            _running = true;
+            PopulateTime.Start();
+            AssetBundleRecompressOperation op = null;
+            try
+            {
+                op = AssetBundle.RecompressAssetBundleAsync(input, output, BuildCompression.LZ4Runtime, 0u, UnityEngine.ThreadPriority.Low);
+            }
+            catch (Exception e)
+            {
+                Log.WarningOnce(LogKey + "upgrade." + fileName, $"BundleCache: LZ4 upgrade of {fileName} failed to start: {e.Message}");
+            }
+            if (op == null)
+            {
+                TryDelete(output);
+                return false;
+            }
+            op.completed += _ =>
+            {
+                bool success = op.success;
+                ThreadPool.QueueUserWorkItem(__ =>
+                {
+                    Log.Guard("BundleCache upgrade store", () =>
+                    {
+                        if (success && BundleHeader.IsCompleteCopy(output) && BundleHeader.Nodes(output) == BundleHeader.Nodes(input))
+                        {
+                            string target = _store.UpgradePath(fileName);
+                            TryDelete(target);
+                            File.Move(output, target);
+                            _upgraded++;
+                        }
+                        else
+                        {
+                            TryDelete(output);
+                        }
+                    });
+                    _main.Post(___ => Log.Guard("BundleCache next", Next), null);
+                });
+            };
+            return true;
         }
 
         /// <summary>Worker thread: RecompressAssetBundleAsync takes a file path, so the resource is copied out first.</summary>

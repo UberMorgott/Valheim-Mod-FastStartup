@@ -1,4 +1,7 @@
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using BepInEx;
 using FastStartup.BundleCache;
 using FastStartup.ConfigSave;
 using FastStartup.Core;
@@ -43,6 +46,16 @@ namespace FastStartup
                 if (Config.ProfilerEnabled.Value)
                 {
                     Profiler.Begin();
+                }
+                if (Config.BundleCacheEnabled.Value && Config.BundleCacheEagerFirstBuild.Value)
+                {
+                    // Before Unity reports Application.unityVersion: UnityPlayer.dll's product version carries the same
+                    // string ("6000.0.75f1 (26349cd2a5c8)"); BundleCacheModule checks the guess once Unity is up.
+                    string unity = FileVersionInfo.GetVersionInfo(Path.Combine(Paths.GameRootPath, "UnityPlayer.dll")).ProductVersion?.Split(' ')[0];
+                    if (!string.IsNullOrEmpty(unity))
+                    {
+                        EagerBuilder.Start(CacheStore.DirFor(BundleCacheModule.CacheRoot, unity));
+                    }
                 }
             });
         }

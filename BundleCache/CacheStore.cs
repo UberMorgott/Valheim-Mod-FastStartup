@@ -29,12 +29,20 @@ namespace FastStartup.BundleCache
         private readonly HashSet<string> _packServed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, IndexEntry> _index;
 
+        /// <summary>Suffix of Unity's LZ4 recompression of an eagerly built (uncompressed) copy, promoted over it at the next launch.</summary>
+        public const string UpgradeExtension = ".lz4";
+
         public CacheStore(string root, string unityVersion)
         {
             _root = Path.GetFullPath(root);
-            Dir = Path.Combine(_root, FormatVersion + "-" + Sanitize(unityVersion));
+            Dir = DirFor(root, unityVersion);
             Directory.CreateDirectory(Dir);
         }
+
+        /// <summary>Copy directory for a Unity version (also computed by the preloader, before Unity reports it).</summary>
+        public static string DirFor(string root, string unityVersion) => Path.Combine(Path.GetFullPath(root), FormatVersion + "-" + Sanitize(unityVersion));
+
+        public string UpgradePath(string fileName) => Path.Combine(Dir, fileName + UpgradeExtension);
 
         /// <summary>Directory of the copies valid for this format version and Unity version.</summary>
         public string Dir { get; }

@@ -44,7 +44,8 @@ namespace FastStartup.ConfigSave
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(StartPrefix)), Priority.First),
                 finalizer: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(StartFinalizer)), Priority.Last));
             harmony.Patch(AccessTools.DeclaredMethod(typeof(ConfigFile), nameof(ConfigFile.Save)),
-                prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(SavePrefix)), Priority.Last));
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(SavePrefix)), Priority.Last),
+                postfix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(SavePostfix)), Priority.Last));
             harmony.Patch(AccessTools.DeclaredMethod(typeof(ConfigFile), nameof(ConfigFile.Reload)),
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(ReloadPrefix)), Priority.First),
                 postfix: new HarmonyMethod(AccessTools.Method(typeof(ConfigSaveBatcher), nameof(ReloadPostfix)), Priority.Last));
@@ -63,8 +64,9 @@ namespace FastStartup.ConfigSave
 
         private static void StartFinalizer() => Flush("chainloader end", stop: false);
 
-        private static bool SavePrefix(ConfigFile __instance, bool __runOriginal)
+        private static bool SavePrefix(ConfigFile __instance, bool __runOriginal, out bool __state)
         {
+            __state = false;
             if (!__runOriginal || _bypass)
             {
                 return __runOriginal;
@@ -84,11 +86,8 @@ namespace FastStartup.ConfigSave
                 lock (Lock)
                 {
                     _explicit++;
-                    if (Stamps.Remove(__instance))
-                    {
-                        Pending.Remove(__instance);
-                    }
                 }
+                __state = true; // the pending deferred write is settled only once this write succeeded (postfix)
                 return true;
             }
             lock (Lock)
@@ -107,6 +106,22 @@ namespace FastStartup.ConfigSave
             }
         }
 
+        /// <summary>Explicit save written (no exception): a deferred write of the same file is no longer needed.</summary>
+        private static void SavePostfix(ConfigFile __instance, bool __state, bool __runOriginal)
+        {
+            if (!__state || !__runOriginal)
+            {
+                return;
+            }
+            lock (Lock)
+            {
+                if (Stamps.Remove(__instance))
+                {
+                    Pending.Remove(__instance);
+                }
+            }
+        }
+
         /// <summary>
         /// True when the running <c>ConfigFile.Save</c> was called by BepInEx itself: <c>Bind&lt;T&gt;</c> and
         /// <c>OnSettingChanged</c> (both <c>if (SaveOnConfigSet) Save();</c>) or the constructor's <c>saveOnInit</c>
@@ -116,6 +131,19 @@ namespace FastStartup.ConfigSave
         /// </summary>
         private static bool IsImplicitSave()
         {
+            try
+            {
+                return ImplicitCaller();
+            }
+            catch (Exception e)
+            {
+                Log.WarningOnce("ConfigSaveBatcher.stack", $"ConfigSaveBatcher: caller check failed, saves written at once: {e.Message}");
+                return false;
+            }
+        }
+
+        private static bool ImplicitCaller()
+        {
             StackFrame[] frames = new StackTrace(1, false).GetFrames();
             if (frames == null)
             {
@@ -124,9 +152,10 @@ namespace FastStartup.ConfigSave
             foreach (StackFrame frame in frames)
             {
                 MethodBase method = frame.GetMethod();
-                if (method == null || method is System.Reflection.Emit.DynamicMethod)
+                if (method == null || method.Name.IndexOf("ConfigFile::Save", StringComparison.Ordinal) >= 0 ||
+                    (method.DeclaringType?.FullName?.IndexOf("ConfigFile::Save", StringComparison.Ordinal) ?? -1) >= 0)
                 {
-                    continue; // Harmony's patched copy of Save (or an unknown native frame)
+                    continue; // Harmony's patched copy of Save ("DMD<BepInEx.Configuration.ConfigFile::Save>") or a native frame
                 }
                 Type type = method.DeclaringType;
                 if (type == null)

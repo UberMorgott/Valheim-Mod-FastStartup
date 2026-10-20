@@ -15,6 +15,8 @@ namespace FastStartup.Core
 
         public static ConfigEntry<int> BundleCacheMaxSizeMB { get; private set; }
 
+        public static ConfigEntry<bool> BundleCacheEagerFirstBuild { get; private set; }
+
         public static ConfigEntry<bool> ConfigSaveBatcherEnabled { get; private set; }
 
         public static ConfigEntry<bool> LocalizationCacheEnabled { get; private set; }
@@ -83,6 +85,10 @@ namespace FastStartup.Core
                 new ConfigDescription("Local cache size cap. Least recently used copies beyond it are deleted after the main menu " +
                                       "(copies loaded in the current session are kept; the modpack's copies are never touched).",
                     new AcceptableValueRange<int>(64, 65536)));
+            BundleCacheEagerFirstBuild = file.Bind("BundleCache", "EagerFirstBuild", true,
+                "From the preloader on, convert mods' LZMA bundles that have no cached copy yet on a few background threads " +
+                "(first launch after a mod update), so their loads hit the cache instead of decompressing on the main thread. " +
+                "Needs Enabled. Applied at the next start.");
             ConfigSaveBatcherEnabled = file.Bind("ConfigSaveBatcher", "Enabled", true,
                 "While the chainloader loads plugins, write each changed .cfg once at the end instead of on every Bind/value " +
                 "change (BepInEx rewrites the whole file each time). Also flushed before a pending file is reloaded and on " +
