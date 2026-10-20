@@ -127,6 +127,13 @@ namespace FastStartup.WorldGen
             {
                 return true;
             }
+            if (ReferenceEquals(_owner, __instance) && CacheForeign() is string cacheForeign)
+            {
+                // A patch that appeared after the paths were taken (e.g. before a ForceRegen): its map must not be saved
+                // under our key.
+                Log.WarningOnce("minimap-cache-foreign:" + cacheForeign, $"MinimapGen: {cacheForeign}, client minimap not cached");
+                Disown(__instance);
+            }
             string foreign = Foreign(_generate);
             if (foreign != null)
             {
@@ -205,10 +212,14 @@ namespace FastStartup.WorldGen
             }
             // Any foreign patch on the load or the build (a postfix could change the textures after the save) or on the
             // pixel path: the cached files would not be what that mod's game shows.
-            string foreign = PatchGuard.Foreign(_tryLoad) ?? PatchGuard.Foreign(_generate) ?? PatchGuard.Foreign(_guarded);
+            string foreign = CacheForeign();
             if (foreign != null)
             {
                 Log.WarningOnce("minimap-cache-foreign:" + foreign, $"MinimapGen: {foreign}, client minimap not cached");
+                if (owned)
+                {
+                    Disown(__instance);
+                }
                 return true;
             }
             string dir;
@@ -238,6 +249,19 @@ namespace FastStartup.WorldGen
             }
             Trim(dir);
             return false;
+        }
+
+        private static string CacheForeign() => PatchGuard.Foreign(_tryLoad) ?? PatchGuard.Foreign(_generate) ?? PatchGuard.Foreign(_guarded);
+
+        /// <summary>Back to the client's vanilla state (no cache paths): vanilla then regenerates and saves nothing.</summary>
+        private static void Disown(Minimap minimap)
+        {
+            _owner = null;
+            _saveDirectory(minimap) = null;
+            _maskPath(minimap) = null;
+            _biomePath(minimap) = null;
+            _heightPath(minimap) = null;
+            _metaPath(minimap) = null;
         }
 
         /// <summary>Vanilla TryLoadMinimapTextureData body without <c>Version.World.CheatCleanSlate != ZNet.World.m_worldVersion</c>.</summary>
