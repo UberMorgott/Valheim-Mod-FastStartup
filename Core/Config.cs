@@ -47,6 +47,10 @@ namespace FastStartup.Core
 
         public static ConfigEntry<bool> PrefetchSectors { get; private set; }
 
+        public static ConfigEntry<bool> ParallelMinimap { get; private set; }
+
+        public static ConfigEntry<bool> ClientMinimapCache { get; private set; }
+
         public static ConfigEntry<bool> ProfilerTimeUnityMessages { get; private set; }
 
         public static ConfigEntry<bool> SpikeProbe { get; private set; }
@@ -56,7 +60,7 @@ namespace FastStartup.Core
         public static ConfigEntry<bool> ScriptBreakdown { get; private set; }
 
         /// <summary>Any [WorldGen] key that needs the WorldGen hooks.</summary>
-        public static bool WorldGenAny => ParallelBiomeData.Value || FastLakes.Value || PregenCache.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
+        public static bool WorldGenAny => ParallelBiomeData.Value || ParallelMinimap.Value || ClientMinimapCache.Value || FastLakes.Value || PregenCache.Value || EarlyReject.Value || LoadingTimeBudget.Value > 0f || DumpLocations.Value;
 
         public static void Load()
         {
@@ -142,6 +146,15 @@ namespace FastStartup.Core
                 "With PrefetchBiomeData: also build the biome sectors (flood fill of the map into regions, their edges and " +
                 "neighbours) on the prefetch worker; the main-thread part (discovered flags, alt biomes) still runs at the vanilla " +
                 "moment. Same sectors. Read once at launch.");
+            ParallelMinimap = file.Bind("WorldGen", "ParallelMinimap", true,
+                "Build the world minimap (biome colours, forest mask, heights; Minimap.GenerateWorldMap, 4-5 s in one frame on a " +
+                "first load and on every join to a server) on all CPU cores, same per-pixel calls, identical textures. Falls back to " +
+                "vanilla while another mod patches the world generator or the minimap colour methods. Read once at launch.");
+            ClientMinimapCache = file.Bind("WorldGen", "ClientMinimapCache", true,
+                "On a client joining a server: keep the generated minimap textures in BepInEx\\FastStartup\\cache\\minimap\\<seed>_g<gen>_<fp> " +
+                "(vanilla file format; vanilla caches them only for worlds hosted locally) and load them on the next join instead of " +
+                "generating again. Keyed by world seed, world generator version, game / data versions and the minimap settings; " +
+                "the newest 8 worlds are kept; off while another mod patches the world generator. Read once at launch.");
             ProfilerTimeUnityMessages = file.Bind("Profiler", "TimeUnityMessages", false,
                 "With [Profiler] Enabled: time every Awake/Start of the game's MonoBehaviours during the world load, per method and " +
                 "load phase (freeze, scene loaded -> first frame, first frame -> spawn). Adds overhead to every object created " +

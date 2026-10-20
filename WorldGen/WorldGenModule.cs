@@ -41,6 +41,10 @@ namespace FastStartup.WorldGen
             {
                 Log.Guard("FastLakes install", () => FastLakes.Install(harmony, _dump));
             }
+            if (Config.ParallelMinimap.Value || Config.ClientMinimapCache.Value)
+            {
+                Log.Guard("MinimapGen install", () => MinimapGen.Install(harmony, Config.ParallelMinimap.Value, Config.ClientMinimapCache.Value));
+            }
             if (early || profiler)
             {
                 Log.Guard("Location generation hooks install", () => LocationGeneration.Install(harmony, early));
@@ -50,7 +54,7 @@ namespace FastStartup.WorldGen
                 Log.Guard("LoadingTimeBudget install", () => LoadingTimeBudget.Install(harmony, budget));
             }
             Log.Guard("WorldGen timing hooks install", () => InstallTiming(harmony));
-            Log.Info($"WorldGen: ParallelBiomeData={parallel}, PrefetchBiomeData={parallel && Config.PrefetchBiomeData.Value}, FastLakes={Config.FastLakes.Value}, PregenCache={Config.PregenCache.Value}, PrefetchSectors={parallel && Config.PrefetchBiomeData.Value && Config.PrefetchSectors.Value}, EarlyReject={early}, LoadingTimeBudget={budget.ToString(CultureInfo.InvariantCulture)}, DumpLocations={_dump}");
+            Log.Info($"WorldGen: ParallelBiomeData={parallel}, PrefetchBiomeData={parallel && Config.PrefetchBiomeData.Value}, FastLakes={Config.FastLakes.Value}, PregenCache={Config.PregenCache.Value}, PrefetchSectors={parallel && Config.PrefetchBiomeData.Value && Config.PrefetchSectors.Value}, ParallelMinimap={Config.ParallelMinimap.Value}, ClientMinimapCache={Config.ClientMinimapCache.Value}, EarlyReject={early}, LoadingTimeBudget={budget.ToString(CultureInfo.InvariantCulture)}, DumpLocations={_dump}");
         }
 
         private static void InstallTiming(Harmony harmony)

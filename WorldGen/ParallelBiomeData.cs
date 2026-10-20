@@ -207,7 +207,7 @@ namespace FastStartup.WorldGen
         /// parallel rows any worker could hit it first. So the cache is pointed at the grid's current array (or none) under
         /// the generator's own write lock: every lookup then returns what the dictionary holds, as vanilla's do once evicted.
         /// </summary>
-        private static void NormalizeRiverCache(WorldGenerator generator)
+        internal static void NormalizeRiverCache(WorldGenerator generator)
         {
             ReaderWriterLockSlim cacheLock = CacheLock(generator);
             cacheLock.EnterWriteLock();
