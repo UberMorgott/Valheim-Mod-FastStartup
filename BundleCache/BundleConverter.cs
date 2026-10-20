@@ -163,7 +163,7 @@ namespace FastStartup.BundleCache
                 }
                 long offset = Int64(dir, at);
                 long size = Int64(dir, at + 8);
-                if (offset < 0 || size < 0 || offset + size > dataSize)
+                if (offset < 0 || size < 0 || offset > dataSize || size > dataSize - offset)
                 {
                     return "node outside the data";
                 }

@@ -46,6 +46,12 @@ namespace FastStartup.BundleCache
         {
             _dir = cacheDir;
             Clock.Start();
+            // Synchronous, before any load hook exists: no load can see a copy mid-replacement.
+            Log.Guard("BundleCache eager promote", () =>
+            {
+                Directory.CreateDirectory(_dir);
+                PromoteUpgrades(_dir);
+            });
             var scan = new Thread(() => Log.Guard("BundleCache eager scan", Scan)) { IsBackground = true, Name = "FastStartup eager scan", Priority = ThreadPriority.BelowNormal };
             scan.Start();
         }
@@ -136,8 +142,6 @@ namespace FastStartup.BundleCache
 
         private static void Scan()
         {
-            Directory.CreateDirectory(_dir);
-            PromoteUpgrades(_dir);
             var found = new List<Job>();
             string plugins = Paths.PluginPath;
             FieldInfo offsetField = typeof(EmbeddedResource).GetField("offset", BindingFlags.NonPublic | BindingFlags.Instance);

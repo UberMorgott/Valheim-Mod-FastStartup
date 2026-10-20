@@ -408,7 +408,8 @@ namespace FastStartup.BundleCache
             if (op == null)
             {
                 TryDelete(output);
-                return false;
+                _running = false;
+                return NextUpgrade(); // try the next copy
             }
             op.completed += _ =>
             {

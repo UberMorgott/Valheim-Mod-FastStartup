@@ -160,7 +160,7 @@ namespace FastStartup.ConfigSave
                 Type type = method.DeclaringType;
                 if (type == null)
                 {
-                    continue;
+                    return false; // unknown frame (e.g. a dynamic handler): explicit, written at once
                 }
                 string ns = type.Namespace ?? "";
                 if (type == typeof(ConfigSaveBatcher) || ns.StartsWith("HarmonyLib", StringComparison.Ordinal) ||
