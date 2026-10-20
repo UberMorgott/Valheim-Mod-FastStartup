@@ -81,6 +81,9 @@ Where the rest of the world load goes (profiler, frame probe + Awake/Start probe
 
 ## Changes
 
+- 0.8.0: client minimap ([WorldGen] ParallelMinimap, [WorldGen] ClientMinimapCache, both on): the world minimap
+  is built on all cores (cold join 4.4-4.6 s -> 0.9 s) and kept per seed for clients (warm join 0.2-0.26 s load);
+  cache files byte-identical to vanilla generation.
 - 0.7.0: VNEI indexing ModHotspot (`[ModHotspots] VNEIIndexing`, on by default): VNEI's index build moved off the
   first play frame (first play frame 880 -> 204 ms, VNEI 718 -> 6 ms; index dumps byte-identical off vs on).
   ScriptBreakdown profiler (`[Profiler] ScriptBreakdown`, off by default): per-method / per-owner split of SpikeProbe's
@@ -214,6 +217,25 @@ output; the log always gets `WorldGen: VerifyBiomeData <ms> (GenerateBiomePoints
   BiomeSector / BiomeTypeInfo constructors or ZoneSystem.GetZone. The generator-path guard of every WorldGen feature
   also covers `Utils.LerpStep` / `Utils.FloorToInt`.
 
+- **ParallelMinimap**: the first `Minimap.Update` with a world generator (Minimap.cs:655-666) builds the 2048x2048
+  forest mask / biome colour / height textures in one frame when the cache misses (`GenerateWorldMap`, :1950-1987;
+  4.4-4.6 s). A replacing prefix runs the same per-pixel calls (`GetBiome`, `GetBiomeHeight`, the private
+  `GetPixelColor` / `GetMaskColor` through delegates) row by row with `Parallel.For` after the river cache refresh,
+  then uploads the textures, logs the vanilla line and calls the vanilla `SaveMapTextureDataToDisk`. Vanilla while a
+  foreign patch is on the generator path, the colour methods, `Utils.SmoothStep` or a transpiler on GenerateWorldMap.
+- **ClientMinimapCache**: vanilla sets the cache paths only in `Minimap.Start` when `ZNet.World` exists (:569-581);
+  a remote client's world is created later in `ZNet.RPC_PeerInfo` (ZNet.cs:1109-1116) with a default
+  `m_worldVersion`, so every join regenerates and the save no-ops (:1991). On a client a prefix on
+  `TryLoadMinimapTextureData` points the paths at `BepInEx\FastStartup\cache\minimap\<seed>_g<worldGenVersion>_<fp>\`
+  (vanilla file names / format; the vanilla save writes there on a miss) and runs the vanilla load body without the
+  host save-file version check; all three decoded sizes are checked before any texture is touched. `fp` = 128 bits of
+  SHA-256 over a schema number, assembly_valheim / assembly_utils MVIDs, game / network / biome-data / cached-minimap
+  versions, Unity version, texture and pixel size and the minimap colours. Newest 8 worlds kept. Off while any foreign
+  patch is on the load, the build or the pixel path. The vanilla `DeleteMapTextureData(<server world name>)` (it deletes
+  the cache of a same-named local world) is skipped for this entry. Host / single player unchanged.
+  Lab (dedicated server + 2 Steam clients, `tools\mp.ps1 -Peer`): minimap frame 4380-4564 ms vanilla, 907 ms parallel
+  cold, 186-259 ms warm load; client Connected -> Spawned 9 s -> 4 s (second client), cache files SHA-256 equal for
+  vanilla vs parallel generation.
 Measured on the lab dedicated server (Ryzen 7 9800X3D, 16 threads; the pack's 35 server plugins, 197 location types
 incl. modded, ~12.8k instances; 3 new worlds x 2 runs each, every run a fresh generation from the same `.fwl`):
 
