@@ -81,6 +81,10 @@ Where the rest of the world load goes (profiler, frame probe + Awake/Start probe
 
 ## Changes
 
+- 0.9.0: [BundleCache] EagerFirstBuild (on): cold first launch with an empty cache 55.2 s -> 37.7 s to the menu,
+  main-thread bundle time 17.9 s -> 1.2 s (28 bundles, 1094 MB, built in 16 s on 6 threads); warm launch unchanged.
+  A cached copy Unity cannot load falls back to the original load and is rebuilt. ConfigSaveBatcher defers only
+  BepInEx's own saves; an explicit `ConfigFile.Save()` writes at once.
 - 0.8.0: client minimap ([WorldGen] ParallelMinimap, [WorldGen] ClientMinimapCache, both on): the world minimap
   is built on all cores (cold join 4.4-4.6 s -> 0.9 s) and kept per seed for clients (warm join 0.2-0.26 s load);
   cache files byte-identical to vanilla generation.
@@ -118,6 +122,9 @@ Config `BepInEx\config\FastStartup.cfg`:
   prebuilt copies first, see "Modpack cache").
 - `[BundleCache] MaxCacheSizeMB` (default `2048`): local cache size cap, least recently used copies not loaded in
   this session are evicted (the modpack cache is not counted or touched).
+- `[BundleCache] EagerFirstBuild` (default `true`): from the preloader on, mods' LZMA bundles without a cached copy
+  are converted on up to 6 background threads (managed LZMA, stored blocks), so the first launch after a mod update
+  already hits the cache; Unity recompresses those copies to LZ4 after the menu, swapped in at the next launch.
 - `[ConfigSaveBatcher] Enabled` (default `true`): one write per `.cfg` instead of one per `Bind`/value change during
   startup.
 - `[LocalizationCache] Enabled` (default `true`): parse each vanilla localization CSV once per language.
