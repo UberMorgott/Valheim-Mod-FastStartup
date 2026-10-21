@@ -1,0 +1,9 @@
+<Project>
+  <!-- Reproducible across checkout paths: a worktree or copy of one commit must build a byte-identical DLL
+       (autotest deploy-hash layer, pack hash). PathMap rewrites the repo root to /_/ in PDB document paths,
+       the PE debug-directory PDB path and [CallerFilePath] strings. -->
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+  </PropertyGroup>
+</Project>
