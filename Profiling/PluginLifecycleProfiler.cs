@@ -10,7 +10,7 @@ namespace FastStartup.Profiling
 {
     /// <summary>
     /// BepInEx chainloader lifecycle + per-plugin load cost. <c>Chainloader.Start</c> logs
-    /// <c>Loading [{PluginInfo}]</c> right before <c>Assembly.LoadFile</c> + <c>ManagerObject.AddComponent(type)</c>
+    /// <c>Loading [{PluginInfo}]</c> (pack 5.4.2351+: <c>Loading [{PluginInfo}] ({GUID})</c>) right before <c>Assembly.LoadFile</c> + <c>ManagerObject.AddComponent(type)</c>
     /// (BepInEx.dll decompile, Chainloader.Start lines 6243-6249); AddComponent runs the plugin's static constructor
     /// and <c>Awake</c> synchronously. A log listener (BepInEx dispatches log events synchronously,
     /// <c>SendLogEvent</c> line 2778) turns those lines into spans: one plugin = its Loading line to the next one
@@ -26,6 +26,8 @@ namespace FastStartup.Profiling
         private static Harmony _harmony;
         private static long _currentStart;
         private static string _currentName;
+        private static string _currentGuid;
+        private const string GuidSeparator = "] (";
 
         /// <summary>Raised at the end of Chainloader.Initialize: Unity is up, game assemblies are resolvable.</summary>
         public static event Action ChainloaderInitialized;
@@ -100,13 +102,14 @@ namespace FastStartup.Profiling
                 Pending.Add(new TraceEvent
                 {
                     Cat = "plugin",
-                    Name = _currentName,
+                    Name = _currentGuid ?? _currentName,
                     Start = _currentStart,
                     End = end,
                     Detail = _currentName,
                     Detail2 = "assembly load + static ctor + Awake",
                 });
                 _currentName = null;
+                _currentGuid = null;
             }
         }
 
@@ -116,20 +119,62 @@ namespace FastStartup.Profiling
             {
                 return;
             }
-            if (text == CompleteMessage)
+            if (IsCompleteMessage(text))
             {
                 // Logged before Chainloader.Start postfixes run: keeps a deferred Harmony flush out of the last plugin.
                 ClosePlugin(StartupTrace.Now());
                 return;
             }
-            if (!text.StartsWith(LoadingPrefix, StringComparison.Ordinal) || !text.EndsWith("]", StringComparison.Ordinal))
+            if (!TryParseLoading(text, out string name, out string guid))
             {
                 return;
             }
             long now = StartupTrace.Now();
             ClosePlugin(now);
-            _currentName = text.Substring(LoadingPrefix.Length, text.Length - LoadingPrefix.Length - 1);
+            _currentName = name;
+            _currentGuid = guid;
             _currentStart = now;
+        }
+
+        // Pack 5.4.2350: "Chainloader startup complete"; 5.4.2351: "... complete (N loaded, N skipped, N failed)".
+        internal static bool IsCompleteMessage(string text)
+        {
+            return text == CompleteMessage
+                || (text.StartsWith(CompleteMessage + " (", StringComparison.Ordinal) && text.EndsWith(")", StringComparison.Ordinal));
+        }
+
+        // Pack 5.4.2350: "Loading [{PluginInfo}]"; 5.4.2351: "Loading [{PluginInfo}] ({GUID})" (Chainloader.Start).
+        // GUID is null for the old format and resolved from Chainloader.PluginInfos at the end of Start.
+        internal static bool TryParseLoading(string text, out string name, out string guid)
+        {
+            name = null;
+            guid = null;
+            if (!text.StartsWith(LoadingPrefix, StringComparison.Ordinal))
+            {
+                return false;
+            }
+            if (text.EndsWith(")", StringComparison.Ordinal))
+            {
+                int sep = text.LastIndexOf(GuidSeparator, StringComparison.Ordinal);
+                if (sep < LoadingPrefix.Length)
+                {
+                    return false;
+                }
+                int guidStart = sep + GuidSeparator.Length;
+                guid = text.Substring(guidStart, text.Length - guidStart - 1);
+                name = text.Substring(LoadingPrefix.Length, sep - LoadingPrefix.Length);
+                if (guid.Length == 0)
+                {
+                    guid = null;
+                }
+                return true;
+            }
+            if (text.EndsWith("]", StringComparison.Ordinal))
+            {
+                name = text.Substring(LoadingPrefix.Length, text.Length - LoadingPrefix.Length - 1);
+                return true;
+            }
+            return false;
         }
 
         public void Dispose()
