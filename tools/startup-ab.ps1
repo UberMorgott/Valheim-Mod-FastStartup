@@ -10,16 +10,22 @@
 #         hashed), later runs are stamped (-Unstamped: every run hashes). Local = no pack, the current local cache. None = no pack, empty
 #         local cache before each run (the cold 38 s case). Parked folders stay inside BepInEx\FastStartup and are moved back in
 #         finally. Starts only its own valheim.exe, refuses when one from the game folder already runs, closes it at the
-#         menu. Needs a quiet machine for meaningful numbers.
+#         menu. Holds the machine-wide game slot for the whole run (busy -> exit 2; -SlotWaitSec N waits first).
+#         Needs a quiet machine for meaningful numbers.
 param(
     [Parameter(Mandatory)][ValidateSet('Pack', 'Local', 'None')][string]$Setup,
     [string]$PackDir,
     [string]$Game = 'D:\Steam\steamapps\common\Valheim',
     [ValidateRange(1, 20)][int]$Repeat = 3,
     [switch]$Unstamped,
-    [int]$TimeoutSec = 300
+    [int]$TimeoutSec = 300,
+    # Machine-wide game slot (E:\DEV\Valheim\tools\lib\GameSlot.ps1): wait this long when busy, then exit 2 (0 = refuse at once).
+    [ValidateRange(0, 7200)][int]$SlotWaitSec = 0,
+    [string]$GameSlotLib = (Join-Path $PSScriptRoot '..\..\tools\lib\GameSlot.ps1')
 )
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path -LiteralPath $GameSlotLib)) { throw "game slot library not found: $GameSlotLib (pass -GameSlotLib)" }
+. $GameSlotLib
 if ($Setup -eq 'Pack' -and -not (Test-Path -LiteralPath (Join-Path $PackDir 'v1-*\manifest.tsv'))) { throw '-Setup Pack needs -PackDir with v1-<Unity>\manifest.tsv' }
 $fs = "$Game\BepInEx\FastStartup"
 $log = "$Game\BepInEx\LogOutput.log"
@@ -50,6 +56,9 @@ function Wait-Menu {
     [pscustomobject]@{ MenuReadyS = $line ? $line.Matches[0].Groups[1].Value : 'n/a'; BundleCache = $hits ? $hits.Matches[0].Value : '' }
 }
 
+# Held from before the first launch until the last game is closed (busy = lock held or any valheim.exe / valheim_server.exe).
+$slot = Enter-GameSlot 'startup-ab.ps1' $SlotWaitSec
+if ($slot.Busy) { Write-Host "GAME BUSY: $($slot.Reason)" -ForegroundColor Red; exit 2 }
 try {
     if (Test-Path $local) { Move-Item $local $parkedLocal }
     if (Test-Path $pack) { Move-Item $pack $parkedPack }
@@ -70,4 +79,5 @@ try {
     if (Test-Path $pack) { Remove-Item $pack -Recurse -Force }
     if (Test-Path $parkedLocal) { Move-Item $parkedLocal $local }
     if (Test-Path $parkedPack) { Move-Item $parkedPack $pack }
+    Exit-GameSlot $slot
 }
