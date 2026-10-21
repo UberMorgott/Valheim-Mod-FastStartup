@@ -1,0 +1,6 @@
+# Line endings fixed in the repo, not by core.autocrlf: agents write LF, so a fresh checkout or worktree
+# of a commit must also be LF, or the compiler sees different source bytes (PDB checksums fold into the
+# deterministic MVID) and the same commit builds a different DLL.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
