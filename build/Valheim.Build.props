@@ -1,0 +1,105 @@
+<Project>
+  <!-- Valheim.Build v2 -->
+  <!--
+    Canonical shared build settings for Valheim mod repos.
+    Source of truth: UberMorgott/Valheim-Tools-Autotest, valbuild/Valheim.Build.props.
+    Do NOT edit a repo's copy: change the canonical file, bump ValheimBuildVersion,
+    then run `valbuild sync <repo>`. `valbuild check <repo>` (quality-gate) fails on drift.
+
+    Adoption: <repo>/build/{Valheim.Build.props, Polyfills.cs.txt} + <repo>/global.json (valbuild sync),
+    imported first thing from <repo>/Directory.Build.props:
+      <Import Project="$(MSBuildThisFileDirectory)build\Valheim.Build.props" />
+
+    Layers:
+      common (every project, incl. tests/tools): LangVersion, determinism, PathMap, embedded PDB,
+        no SourceLink, ValheimDir property set; .NETFramework projects: pinned reference assemblies +
+        build/Polyfills.cs.txt (compiler attributes copied from dotnet/runtime; opt out ValheimPolyfills=false).
+        TargetFramework stays in each csproj (plugins: net472).
+      plugin (csproj sets <ValheimPlugin>true</ValheimPlugin>): game BepInEx/0Harmony refs,
+        optional Jotunn and publicizer.
+    Opt-in switches are read only by item conditions; items are evaluated after every property of
+    the project (csproj included), so a switch set in the csproj body is honoured here.
+    Per-repo on purpose (not set here): Nullable, TreatWarningsAsErrors, NoWarn, Version, analyzers.
+  -->
+
+  <PropertyGroup>
+    <ValheimBuildVersion>2</ValheimBuildVersion>
+  </PropertyGroup>
+
+  <!-- ===== common ===== -->
+  <PropertyGroup>
+    <!-- No TargetFramework here: a default set before the csproj body would defeat TargetFrameworks
+         multi-targeting. Plugin csproj sets <TargetFramework>net472</TargetFramework> explicitly. -->
+    <LangVersion>14.0</LangVersion>
+
+    <!-- Reproducible across checkout paths: a worktree or copy of one commit builds a byte-identical
+         DLL (autotest deploy-hash layer, pack hash). PathMap rewrites the repo root to /_/ in PDB
+         document paths, the PE debug-directory PDB path and [CallerFilePath] strings. -->
+    <Deterministic>true</Deterministic>
+    <ValheimRepoRoot Condition="'$(ValheimRepoRoot)' == ''">$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</ValheimRepoRoot>
+    <PathMap>$(ValheimRepoRoot)=/_/</PathMap>
+    <DebugType>embedded</DebugType>
+    <!-- SourceLink would put the commit SHA into the (embedded) PDB, which the deterministic content
+         id folds into MVID/PE timestamp: every commit would change the DLL bytes. -->
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(CI)' == 'true' Or '$(GITHUB_ACTIONS)' == 'true' Or '$(TF_BUILD)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- Game location. Override ValheimDir with /p:ValheimDir=..., an environment variable, or a property
+       set in Directory.Build.props BEFORE the import; the derived dirs are computed here. -->
+  <PropertyGroup>
+    <ValheimDir Condition="'$(ValheimDir)' == ''">D:\Steam\steamapps\common\Valheim</ValheimDir>
+    <ValheimDir>$(ValheimDir.TrimEnd('\').TrimEnd('/'))</ValheimDir>
+    <ManagedDir Condition="'$(ManagedDir)' == ''">$(ValheimDir)\Valheim_Data\Managed</ManagedDir>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(ValheimDir)\BepInEx</BepInExDir>
+    <BepInExCoreDir Condition="'$(BepInExCoreDir)' == ''">$(BepInExDir)\core</BepInExCoreDir>
+    <PluginsDir Condition="'$(PluginsDir)' == ''">$(BepInExDir)\plugins</PluginsDir>
+  </PropertyGroup>
+
+  <!-- Pinned .NET Framework reference assemblies: the same ref set on every machine, no dependency on
+       an installed targeting pack. The SDK skips its implicit copy when this explicit one exists. -->
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Compiler-required attributes the net472 reference set lacks (init, required, nullable flow,
+       CallerArgumentExpression, UnscopedRef): plain source, internal types, fixed order, so the
+       build stays byte-reproducible (a source generator's output order varied between cold builds).
+       Mono-unsupported features (ModuleInitializer, SkipLocalsInit, InlineArray, UnsafeAccessor) have
+       no polyfill on purpose; `valbuild check` also bans them in source. -->
+  <PropertyGroup>
+    <ValheimPolyfills Condition="'$(ValheimPolyfills)' == ''">true</ValheimPolyfills>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework' And '$(ValheimPolyfills)' != 'false'">
+    <Compile Include="$(MSBuildThisFileDirectory)Polyfills.cs.txt" Link="Polyfills.cs" Visible="false" />
+  </ItemGroup>
+
+  <!-- ===== plugin layer (csproj: <ValheimPlugin>true</ValheimPlugin>) ===== -->
+  <PropertyGroup>
+    <!-- Switch defaults; a csproj may override them in its own body. -->
+    <ValheimBepInExRefs Condition="'$(ValheimBepInExRefs)' == ''">true</ValheimBepInExRefs>
+    <ValheimUseJotunn Condition="'$(ValheimUseJotunn)' == ''">false</ValheimUseJotunn>
+    <ValheimUsePublicizer Condition="'$(ValheimUsePublicizer)' == ''">false</ValheimUsePublicizer>
+  </PropertyGroup>
+
+  <!-- BepInEx + HarmonyX from the game's BepInEx\core: the exact runtime versions (0Harmony 2.9.0),
+       not the BepInEx.Core/HarmonyX NuGet packages (HarmonyX NuGet 2.10.1 > runtime 2.9.0). -->
+  <ItemGroup Condition="'$(ValheimPlugin)' == 'true' And '$(ValheimBepInExRefs)' == 'true'">
+    <Reference Include="BepInEx" HintPath="$(BepInExCoreDir)\BepInEx.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(BepInExCoreDir)\0Harmony.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ValheimPlugin)' == 'true' And '$(ValheimUseJotunn)' == 'true'">
+    <Reference Include="Jotunn" HintPath="$(PluginsDir)\Jotunn\Jotunn.dll" Private="false" />
+  </ItemGroup>
+
+  <!-- Publicizer: mark game references Publicize="true" in the csproj. Krafs.Publicizer repos keep
+       their own package and leave this off. -->
+  <ItemGroup Condition="'$(ValheimPlugin)' == 'true' And '$(ValheimUsePublicizer)' == 'true'">
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.3" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+</Project>

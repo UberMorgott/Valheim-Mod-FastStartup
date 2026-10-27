@@ -1,48 +1,31 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- LangVersion, determinism, PathMap, embedded PDB, SourceLink off, ValheimDir/ManagedDir/BepInExCoreDir/PluginsDir
+       and the game's BepInEx + 0Harmony + Jotunn references come from build\Valheim.Build.props. -->
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
+    <ValheimPlugin>true</ValheimPlugin>
+    <ValheimUseJotunn>true</ValheimUseJotunn>
     <AssemblyName>FastStartup</AssemblyName>
     <RootNamespace>FastStartup</RootNamespace>
     <Product>FastStartup</Product>
     <Version>0.9.2</Version>
-    <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <Deterministic>true</Deterministic>
-    <DebugType>embedded</DebugType>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
     <!-- VNEI.dll targets net481; only its metadata is referenced (ModHotspots), the game runs it on Unity's Mono. -->
     <ResolveAssemblyReferenceIgnoreTargetFrameworkAttributeVersionMismatch>true</ResolveAssemblyReferenceIgnoreTargetFrameworkAttributeVersionMismatch>
-    <!-- SDK 8's in-box SourceLink embeds the git commit SHA in the PDB, which the deterministic
-         content id folds into the MVID/PE timestamp: every commit changed the DLL bytes. -->
-    <EnableSourceLink>false</EnableSourceLink>
-    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
-  </PropertyGroup>
-
-  <PropertyGroup>
-    <ValheimDir>D:\Steam\steamapps\common\Valheim</ValheimDir>
-    <ManagedDir>$(ValheimDir)\valheim_Data\Managed</ManagedDir>
-    <BepInExCoreDir>$(ValheimDir)\BepInEx\core</BepInExCoreDir>
   </PropertyGroup>
 
   <!--
-    A preloader patcher is loaded before the chainloader, so it references the exact BepInEx/HarmonyX
-    copies shipped in BepInEx\core instead of NuGet packages. UnityEngine modules
-    and assembly_valheim are referenced from the game; their types are only
+    A preloader patcher is loaded before the chainloader, so it references the exact BepInEx/HarmonyX/MonoMod
+    copies shipped in BepInEx\core (BepInEx + 0Harmony via the shared props) instead of NuGet packages.
+    UnityEngine modules and assembly_valheim are referenced from the game; their types are only
     touched from code that runs after Chainloader.Initialize, never during the preloader.
   -->
   <ItemGroup>
-    <Reference Include="BepInEx">
-      <HintPath>$(BepInExCoreDir)\BepInEx.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
     <Reference Include="BepInEx.Preloader">
       <HintPath>$(BepInExCoreDir)\BepInEx.Preloader.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="0Harmony">
-      <HintPath>$(BepInExCoreDir)\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="MonoMod.RuntimeDetour">
@@ -79,13 +62,9 @@
       <Private>false</Private>
     </Reference>
     <!-- Third-party plugins for ModHotspots replacements: only touched after the plugin is found loaded and its IL
-         fingerprint matched (ModHotspots\VneiIndexingFix.cs). -->
+         fingerprint matched (ModHotspots\VneiIndexingFix.cs). Jotunn comes from ValheimUseJotunn. -->
     <Reference Include="VNEI">
-      <HintPath>$(ValheimDir)\BepInEx\plugins\Vnei\VNEI.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Jotunn">
-      <HintPath>$(ValheimDir)\BepInEx\plugins\Jotunn\Jotunn.dll</HintPath>
+      <HintPath>$(PluginsDir)\Vnei\VNEI.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine">

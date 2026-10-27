@@ -1,9 +1,6 @@
 <Project>
-  <!-- Reproducible across checkout paths: a worktree or copy of one commit must build a byte-identical DLL
-       (autotest deploy-hash layer, pack hash). PathMap rewrites the repo root to /_/ in PDB document paths,
-       the PE debug-directory PDB path and [CallerFilePath] strings. -->
-  <PropertyGroup>
-    <Deterministic>true</Deterministic>
-    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
-  </PropertyGroup>
+  <!-- Shared Valheim build settings (SDK pin is global.json). Both files are canonical copies from
+       UberMorgott/Valheim-Tools-Autotest valbuild/: never edit them here, run `valbuild sync .`;
+       `valbuild check .` (quality-gate) fails on drift. -->
+  <Import Project="$(MSBuildThisFileDirectory)build\Valheim.Build.props" />
 </Project>

@@ -1,0 +1,5 @@
+{
+  "checks": [
+    { "name": "valbuild", "run": "valbuild check .", "level": "fast", "timeoutSec": 60 }
+  ]
+}
