@@ -59,19 +59,32 @@ pre-commit:
 # carefully-won string is how the two would drift apart, which has already happened
 # once in this repo between the template and the advice printed next to it.
 #
-# Not covered here, because git offers nothing to cover it with: `git cherry-pick`
-# and `git revert` run neither hook (measured -- only prepare-commit-msg and
-# post-commit fire). prepare-commit-msg CAN abort them, but it receives source
-# "message" for an ordinary commit too, so wiring the gate there would run it twice
-# on every normal commit. `git commit --amend` and `git merge --squash` both go
-# through pre-commit and are already covered.
+# Not covered by a commit hook, because git offers nothing to cover it with:
+# `git rebase`, `git cherry-pick` and `git revert` run neither hook (measured -- only
+# prepare-commit-msg and post-commit fire). prepare-commit-msg CAN abort them, but it
+# receives source "message" for an ordinary commit too, so wiring the gate there would
+# run it twice on every normal commit. `git commit --amend` and `git merge --squash`
+# both go through pre-commit and are already covered.
 pre-merge-commit:
   jobs:
     - *quality_gate
+
+# ...so those commits are gated where they leave the machine (quality-gate#180):
+# `git fetch && git rebase origin/main && git push` used to push a rebased tree no
+# gate had seen. `qgate pre-push` reads git's ref lines from stdin -- hence
+# use_stdin, without which lefthook keeps them -- refuses a push of anything but the
+# clean checked-out HEAD, then runs the same -All -Full gate on it. Its own job, not
+# the anchor: the run line differs, and the stdin parsing has to live in the gate
+# because this string loses its quotes (third trap above).
+pre-push:
+  jobs:
+    - name: quality-gate
+      use_stdin: true
+      run: 'if uname -o 2>/dev/null | grep -q Msys; then qgate.cmd pre-push; else qgate pre-push; fi'
 
 # The agent Stop hook is deliberately NOT generated through lefthook's `ai:`
 # key. Measured on 2.1.12: the generated command is `lefthook run <hook>`, which
 # exits 1 on failure -- but Claude Code only blocks the turn on exit **2**, so
 # the generated wiring runs the gate and then lets the agent finish anyway. It
 # also has no retry cap. `qgate stop-hook` does both, and `qgate wire` puts it
-# into .claude/settings.json for you.
+# into .claude/settings.json for you when qgate.json has "stopHook": true (opt-in).

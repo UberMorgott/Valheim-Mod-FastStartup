@@ -3,6 +3,8 @@
 
 After changing files, run `qgate` from the repository root. Use `qgate -All` when
 dependencies, build configuration, generated files or several stacks changed.
+Commits are gated by the pre-commit hook; uncommitted work is not, so run `qgate`
+before handing it off.
 
 Exit code 0 means done. Anything else means NOT done: the output names the exact
 failures -- fix them and run it again. Do not report completion while the gate is
